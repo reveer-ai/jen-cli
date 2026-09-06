@@ -343,6 +343,23 @@ is on the *symptom*, so it holds whatever the mechanism, and it catches the vari
 withdrawn as readily as a path written wrong. Do not soften it into a warning — the whole
 point is that it turns a denial found halfway through a run into a first-second failure.
 
+**Auto mode also discards allow rules, and does not say so on stderr.** Checked rather than
+assumed, because the two causes would be indistinguishable if it did and every healthy run
+would report a trust failure that never happened. On 2.1.260, in a workspace whose
+`.claude/settings.json` carries `Bash(npm run build:*)` and `Bash(npm run typecheck:*)` —
+package-manager run commands, which auto drops on entry — a trusted run under
+`--permission-mode auto` prints **nothing at all** on stderr, while the same workspace
+untrusted prints `Ignoring 5 permissions.allow entries …` under `acceptEdits` and `auto`
+alike, byte-identical. So the mode did not change what the warning means and
+`PERMISSION_WARNING` needs no second clause; leave the regex as it is.
+
+The one thing that evidence does not cover: both runs ended at `Failed to authenticate`
+before any tool ran, so this is the startup path only. It is the right path — the untrusted
+run died at exactly the same point and still printed the warning, which is what makes the
+trusted run's silence a real negative rather than a run that stopped too early — but if auto
+ever announces a discard at the first permission check instead, this note would not have
+caught it.
+
 **The clone path must be `realpath`'d before the trust entry is keyed by it.** This is not
 tidiness and it is not obvious: on macOS the system temporary directory is a symlink, so
 `mkdtemp` hands back `/var/folders/…` while the session resolves its own workspace to

@@ -1,13 +1,13 @@
 ## 1. The dispatched-session argv
 
-- [ ] 1.1 In `cli/exec.ts` (`#session`, ~line 962), change `--permission-mode` from
+- [x] 1.1 In `cli/exec.ts` (`#session`, ~line 962), change `--permission-mode` from
   `acceptEdits` to `auto`, and add `--permission-prompts none`. Flag order does not matter
   except that the prompt stays last — a variadic flag placed before it consumes it, which
   the method's own doc comment already warns about.
-- [ ] 1.2 In `test/exec.test.ts` (~line 352), repoint the `acceptEdits` assertion to `auto`
+- [x] 1.2 In `test/exec.test.ts` (~line 352), repoint the `acceptEdits` assertion to `auto`
   and assert `--permission-prompts none` beside it, in the same shape as the existing
   flag-and-value assertions.
-- [ ] 1.3 Check `test/exec.test.ts` (~line 51) and `cli/exec.ts`'s `prompt()` doc comment
+- [x] 1.3 Check `test/exec.test.ts` (~line 51) and `cli/exec.ts`'s `prompt()` doc comment
   (~line 325) for prose that describes the permission arrangement. Both were reworded off
   `dontAsk` by ENG-184 and now name `-p` alone as the reason a session cannot ask. That is
   still the primary reason and must stay; where they read as though `-p` is the *only*
@@ -15,10 +15,10 @@
 
 ## 2. Empty what jen grants
 
-- [ ] 2.1 `scaffold/settings.json`: empty the `allow` array. Keep the `permissions` object —
+- [x] 2.1 `scaffold/settings.json`: empty the `allow` array. Keep the `permissions` object —
   `test/install.test.ts:79` asserts the installed file has that property, and the file's job
   is now to be the seat a project's own rules take.
-- [ ] 2.2 `test/payload.test.ts` (~line 208, "grants the tooling every stage is told to
+- [x] 2.2 `test/payload.test.ts` (~line 208, "grants the tooling every stage is told to
   run"): this test asserts `git`, `gh` and `openspec` are present, which is the opposite of
   what the scaffold now says. Replace it with one asserting the scaffold grants nothing, and
   rewrite the comment above it — it currently explains why the shared floor is the right
@@ -31,39 +31,47 @@
 
 ## 3. Documentation
 
-- [ ] 3.1 `README.md` §4 ("Grant the permissions the stages need — also yours"): rewrite. It
+- [x] 3.1 `README.md` §4 ("Grant the permissions the stages need — also yours"): rewrite. It
   currently tells an adopter to add their typecheck, lint, build and test commands and shows
   a `pytest`/`ruff`/`mypy` example. Under `auto` none of that is required. State what the
   session may do, that ordinary development work needs no entry, and that the tracked
   settings file is theirs for a rule they do want. Keep the existing warning that an example
   is entries to add rather than a whole file to paste — `adoption-docs` still requires it —
   and keep §5's neighbouring statement about the runner's environment intact.
-- [ ] 3.2 `README.md`: state Claude Code ≥ 2.1.259 as a prerequisite for running the
+- [x] 3.2 `README.md`: state Claude Code ≥ 2.1.259 as a prerequisite for running the
   pipeline, and say what the failure looks like below it — the session is refused before it
   starts, so it presents as a stage that was dispatched and produced nothing.
-- [ ] 3.3 `cli/AGENTS.md` (~line 27): the note explaining that `scaffold/settings.json` and
+- [x] 3.3 `cli/AGENTS.md` (~line 27): the note explaining that `scaffold/settings.json` and
   jen's own `.claude/settings.json` are different files with different jobs. Both are now
   empty of grants; the note's point about editing one not changing the other still holds and
   should stay.
-- [ ] 3.4 `cli/AGENTS.md` (~line 31 and ~line 317): the two workspace-trust notes. Trust is
+- [x] 3.4 `cli/AGENTS.md` (~line 31 and ~line 317): the two workspace-trust notes. Trust is
   still the invocation's job and still keeps a project's own configuration in force, but both
   notes justify it by the allow list jen ships, which is now empty. Reword to name what trust
   actually gates.
-- [ ] 3.5 `test/adoption-docs.test.ts` (~line 79): asserts §4 sits before §5 and describes
+- [x] 3.5 `test/adoption-docs.test.ts` (~line 79): asserts §4 sits before §5 and describes
   what that section says. Update to match the rewritten section rather than deleting the
   ordering check — the two sections still answer neighbouring halves of one question.
 
 ## 4. Check the trust warning still means what it says
 
-- [ ] 4.1 `cli/exec.ts:42` greps session stderr for `Ignoring \d+ permissions.allow entries`
+- [x] 4.1 `cli/exec.ts:42` greps session stderr for `Ignoring \d+ permissions.allow entries`
   and reports it as a workspace that was never trusted. Auto mode *also* discards allow
   rules on entry, for an unrelated reason. Determine what it prints when it does: run a
   session under `--permission-mode auto` in a trusted workspace whose settings carry a rule
   auto drops — `Bash(npm run build:*)` is one — and capture stderr.
-- [ ] 4.2 If the message matches the existing regex, the check now fires on a healthy run and
+- [x] 4.2 If the message matches the existing regex, the check now fires on a healthy run and
   has to distinguish the two causes. If it does not match, leave the regex alone and record
   in `cli/AGENTS.md` that the two were checked and are distinguishable, so the next session
   does not have to re-establish it.
+
+  **It does not match — auto prints nothing on stderr when it discards rules.** On 2.1.260,
+  a trusted workspace whose settings carry `Bash(npm run build:*)` and
+  `Bash(npm run typecheck:*)` produced empty stderr under `--permission-mode auto`, while the
+  same workspace untrusted printed `Ignoring 5 permissions.allow entries …` byte-identically
+  under `acceptEdits` and `auto`. Both runs ended at the same authentication failure, so the
+  silence is the trust state and not a run that stopped early. Regex left alone; recorded in
+  `cli/AGENTS.md`.
 
 ## 5. Verify the behaviour, on jen's own pipeline
 
@@ -93,10 +101,11 @@ Task 2.3 must be done first, or every result here is measuring a `gh` bypass.
 
 ## 6. Ship
 
-- [ ] 6.1 `npm test` and typecheck pass.
-- [ ] 6.2 Add a changeset. Minor: the pipeline's behaviour changes and a host prerequisite
+- [x] 6.1 `npm test` and typecheck pass.
+- [x] 6.2 Add a changeset. Minor: the pipeline's behaviour changes and a host prerequisite
   appears that did not exist before.
-- [ ] 6.3 `dist/` is rebuilt from `cli/exec.ts` carrying the new argv. A runner installs jen
+- [x] 6.3 `dist/` is rebuilt from `cli/exec.ts` carrying the new argv. A runner installs jen
   fresh on every run, so the change does not reach a scheduled run until the release ships.
-- [ ] 6.4 Open the follow-up task for denial visibility — surfacing the stream's
+- [x] 6.4 Open the follow-up task for denial visibility — surfacing the stream's
   `permission_denials` through `verdict()`. `design.md` — Open Questions has the reasoning.
+  Opened as ENG-191, related to this task rather than under it.
