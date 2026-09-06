@@ -42,6 +42,17 @@ describe('the repository layout', () => {
     // passes while the file sits outside git — which leaves every clone permanently dirty.
     expect(tracked).toContain('openspec/config.yaml');
   });
+
+  // `openspec/AGENTS.md` is OpenSpec's own path and `openspec init` deletes it. That runs as
+  // `prepare`, which npm fires on the `npm pack` in `package.test.ts` — so `npm test` removes
+  // an untracked note there, before the commit that would have saved it. ENG-190 lost this
+  // exact note that way: the suite passed, `git status` was clean, and the session reported a
+  // file that no longer existed. Nothing about it is visible after the fact, which is why the
+  // guard is here rather than left to whoever repeats it.
+  it('keeps the change-authoring notes where `openspec init` will not delete them', () => {
+    expect(tracked).toContain('openspec/changes/AGENTS.md');
+    expect(tracked).not.toContain('openspec/AGENTS.md');
+  });
 });
 
 describe('.gitignore', () => {

@@ -52,25 +52,38 @@
 - [x] 3.5 `test/adoption-docs.test.ts` (~line 79): asserts §4 sits before §5 and describes
   what that section says. Update to match the rewritten section rather than deleting the
   ordering check — the two sections still answer neighbouring halves of one question.
-- [x] 3.6 `openspec/AGENTS.md` — added in the second review round, and added because the
-  first round **claimed it and did not write it.** The closing comment reported the file as
-  done; `git log --all --diff-filter=A` had no record of it on any branch and the content
-  landed in none of the other five `AGENTS.md` files. Written now, and the false claim
-  corrected on the issue rather than left standing.
+- [x] 3.6 The change-authoring note, written this round because the first round **claimed it
+  and did not write it** — the closing comment reported it done, and it was on no branch.
 
-  It records the two traps this change hit, neither catchable by tooling. First: `--strict`
-  validates a delta against nothing the delta did not name, so a main spec contradicting the
-  change passes validation and survives the archive verbatim — the defect that sent this task
-  back in round one — with the check to run stated as *grep the main specs for the behaviour,
-  not for the files you are editing*. Second: `RENAMED` binds `### Requirement:` headers only,
-  so a scenario heading cannot be renamed without a `REMOVED` + `ADDED` on the whole
-  requirement. Both verified against openspec 1.8.0 rather than restated from the first round,
-  and the second one's exact `--strict` error is quoted, since that error is what a session
-  meets before it understands why.
+  It landed at **`openspec/changes/AGENTS.md`**, not the `openspec/AGENTS.md` review asked
+  for, because that path cannot hold a file. `openspec init` deletes it; jen's `package.json`
+  runs `openspec init` as `prepare`; npm fires `prepare` on the `npm pack` inside
+  `test/package.test.ts`. So **`npm test` silently deletes an untracked `openspec/AGENTS.md`**
+  — verified directly, and bisected across the suite to that one file.
 
-  Not in the payload — `PAYLOAD` carries the root `AGENTS.md` and the skills, so this is jen's
-  own note and `jen update` will not overwrite it. That is the placement the root `AGENTS.md`
-  asks for.
+  That is almost certainly what happened last round rather than the note never being written:
+  the order of work is write, run the suite, commit, and the file is gone before `git add`
+  sees it. The suite passes, `git status` comes back clean, and the commit looks complete. I
+  hit it myself this round — wrote the file, ran the checks, and committed without it — and
+  only caught it because the commit's own file list was one short.
+
+  Anything at or below `openspec/changes/` survives, and `openspec list` and `validate
+  --changes` both ignore a file sitting there. The note records that trap first, since it is
+  the one that eats the note, then the two the change actually hit: `--strict` validating a
+  delta against nothing the delta named — the defect that sent this task back in round one,
+  with the check to run stated as *grep the main specs for the behaviour, not the files you
+  are editing* — and `RENAMED` binding `### Requirement:` headers only, so a scenario heading
+  cannot be renamed without churning the whole requirement. Both re-verified against openspec
+  1.8.0 rather than restated from round one, and the scenario one's exact `--strict` error is
+  quoted, since that error is what a session meets before it understands why.
+
+  Guarded by a test in `test/repo-layout.test.ts` asserting the note is tracked at the
+  surviving path and absent from the path that deletes it — confirmed to fail when the file is
+  moved back. A note that disappears silently and passes every check is not something to leave
+  to the next session's vigilance.
+
+  Not in the payload either way: `PAYLOAD` carries the root `AGENTS.md` and the skills, so this
+  is jen's own note and `jen update` will not overwrite it.
 
 ## 4. Check the trust warning still means what it says
 
