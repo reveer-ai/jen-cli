@@ -327,6 +327,13 @@ export function verdict(report: SessionReport, exit: Exit, stderr: string): stri
  * can neither identify one nor ask — and a dispatched run has no asking branch. A session
  * launched with a bare skill name would therefore refuse to act, correctly, spending a
  * dispatch and presenting from outside as a stage failure.
+ *
+ * `-p` is the part of that which no configuration reaches: it is what makes an answer
+ * impossible, whatever else the invocation carries. `--permission-prompts none` sits beside
+ * it rather than in place of it, withholding the tools that ask a person instead of leaving
+ * them present with nobody to answer — so a session that would go looking for the asking
+ * branch does not hold one to reach for. Neither leaves a case in which the task may go
+ * unnamed.
  */
 export function prompt(request: RunRequest): string {
   return `/${request.skill} ${request.task}`;
@@ -960,7 +967,9 @@ export class Executor {
       args: [
         ...leading,
         '--permission-mode',
-        'acceptEdits',
+        'auto',
+        '--permission-prompts',
+        'none',
         '--output-format',
         'stream-json',
         '--verbose',

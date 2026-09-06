@@ -24,11 +24,13 @@ Adding a `metadata:` key to a shipped skill for any other reason will therefore 
 
 ## The scaffold ships from `scaffold/`, not from jen's own `.claude/`
 
-`scaffold/settings.json` is what `jen init` writes into an adopter as `.claude/settings.json`. jen's own `.claude/settings.json` is a different file with a different job — a local config a contributor may add permissions to for jen's own build. Editing one does not change the other, deliberately: an adopter's seed should not shift because someone allowed a command here.
+`scaffold/settings.json` is what `jen init` writes into an adopter as `.claude/settings.json`. jen's own `.claude/settings.json` is a different file with a different job — a local config a contributor may add permissions to for jen's own build. Editing one does not change the other, deliberately: an adopter's seed should not shift because someone allowed a command here. Both are empty of grants as of ENG-190, which does not make them the same file; it means the point below applies to a change that *removes* an entry exactly as it did to one that adds one.
 
-**An agent cannot edit jen's own `.claude/settings.json`.** It is the file granting the running session its permissions, and the harness denies the write — correctly, since an agent widening its own allow list is what that guard exists for. So a change that adds permissions here lands in two halves that do not run in the same place: `scaffold/settings.json` an agent edits normally, and jen's own file a human applies by hand. Plan the task that way rather than discovering it at the write, and never route around the denial with a different tool.
+**An agent cannot edit jen's own `.claude/settings.json`.** It is the file granting the running session its permissions, and the harness denies the write — correctly, since an agent widening its own allow list is what that guard exists for. So a change that touches permissions here lands in two halves that do not run in the same place: `scaffold/settings.json` an agent edits normally, and jen's own file a human applies by hand. Plan the task that way rather than discovering it at the write, and never route around the denial with a different tool.
 
-**A workspace the harness has not trusted ignores the allow list entirely.** Installing 0.1.0 from a packed tarball into a scratch project and running `claude` there prints `Ignoring 8 permissions.allow entries from .claude/settings.json: this workspace has not been trusted`, and the session runs as though the file were empty. Trust is keyed by absolute path in `~/.claude.json`, so a dispatched run — a fresh clone at a path nothing has trusted — hits this every time, not just on a developer's first local run. Whatever the seed grants is inert until the invocation establishes trust, which makes it the invocation's problem rather than the scaffold's; the file itself is correct.
+**A workspace the harness has not trusted ignores the project's own configuration entirely.** Installing 0.1.0 from a packed tarball into a scratch project and running `claude` there prints `Ignoring 8 permissions.allow entries from .claude/settings.json: this workspace has not been trusted`, and the session runs as though the file were empty. Trust is keyed by absolute path in `~/.claude.json`, so a dispatched run — a fresh clone at a path nothing has trusted — hits this every time, not just on a developer's first local run.
+
+That message names allow entries because that is what the file held at the time. What trust gates is the file, not any one key in it: an adopter's own permission rules, and whatever else `.claude/settings.json` carries. jen ships an empty allow list now, so there is nothing of jen's left for trust to protect — which changes who is harmed by getting it wrong, not whether it has to be done. It stays the invocation's problem rather than the scaffold's; the file itself is correct.
 
 Scaffold files are written only when absent, and never again — not by `update`, not by `init --force`. `--force` exists to resolve one ambiguity, whether an unstamped fixed path is jen's or the project's, and a filled-in `registry.yaml` is not ambiguous.
 
@@ -314,16 +316,22 @@ promise against an exit code.
 ## Workspace trust is the invocation's, and `-p` does not exempt a run from it
 
 `-p`'s own help says the trust dialog is skipped in non-interactive mode, which reads like a
-dispatched run is exempt. It is not. A fresh clone under `-p --permission-mode acceptEdits`
-still prints `Ignoring N permissions.allow entries from .claude/settings.json: this workspace
-has not been trusted` and runs **as though the file were empty** — on every run, since every
-clone is a path nothing has ever trusted. With nobody present, the consequence is the failure
-the seeded allow list exists to prevent.
+dispatched run is exempt. It is not. A fresh clone under `-p` still prints
+`Ignoring N permissions.allow entries from .claude/settings.json: this workspace has not been
+trusted` and runs **as though the file were empty** — on every run, since every clone is a
+path nothing has ever trusted. (Verified under `--permission-mode acceptEdits`, which is what
+the invocation carried at the time; the mode is not what the trust check reads.)
+
+What is lost is the project's own configuration. jen's seeded allow list was the original
+motive and no longer exists — the scaffold grants nothing as of ENG-190 — but the job is
+unchanged: an adopter's `.claude/settings.json` is where their own permission rules live, and
+an untrusted clone runs as though they had written none. With nobody present, a rule a project
+added precisely because its runs needed it is silently not in force.
 
 Three routes past it were verified against 2.1.220 rather than read off documentation:
-`--settings` (works, and rejected — it leaves the project's own file inert, so a project could
-never grant its runs a command jen does not ship, and jen cannot know a project's typecheck,
-build, or test commands); overriding `HOME` (works, and rejected — it also relocates git's
+`--settings` (works, and rejected — it leaves the project's own file inert, which is the one
+thing trust exists to prevent, and a project can grant its runs commands jen has never heard
+of); overriding `HOME` (works, and rejected — it also relocates git's
 config, ssh's known-hosts, and npm's cache, which a stage's own build reaches for); and
 `CLAUDE_CONFIG_DIR`, which moves exactly the one store that needs moving. That is what
 `exec.ts` uses, writing `projects[<clone>].hasTrustDialogAccepted` into a store the run throws

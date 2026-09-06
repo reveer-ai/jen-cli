@@ -67,6 +67,54 @@ describe('the ownership boundary', () => {
 });
 
 /**
+ * The permissions chapter, which reversed: it used to be a list an adopter had to write.
+ *
+ * Both directions of that reversal are load-bearing and neither is visible at runtime. Telling
+ * an adopter to enumerate their check commands sends them to write a list nothing reads; going
+ * quiet about the file altogether would lose the seat their own rules take, and an adopter who
+ * believes jen owns it will not put a rule there.
+ */
+describe('the permissions chapter', () => {
+  const chapter = readme.slice(at('### 4. Permissions'), at('### 5. Give the stages'));
+
+  it('says an action is judged on what it is, and that ordinary work needs no entry', () => {
+    expect(chapter).toMatch(/judges each action on what the action is/);
+    expect(chapter).toMatch(/needs no entry anywhere/);
+  });
+
+  /**
+   * The starting shape jen used to ship — `npm run build`, `npm run lint`, `npm run typecheck`,
+   * `npm test` — and the `pytest`/`ruff`/`mypy` example that told an adopter outside that
+   * ecosystem to replace it. An adopter is not required to name any of them now, and a chapter
+   * that still asks reads as a condition of unattended runs that no longer exists.
+   */
+  it('does not ask the adopter to grant their own check commands', () => {
+    expect(chapter, 'jen ships no starting shape for anyone\u2019s conventional names').not.toMatch(/npm run (build|lint|typecheck)/);
+    expect(chapter).not.toMatch(/Bash\((pytest|ruff|mypy|cargo|make)/);
+    expect(chapter).not.toMatch(/[Aa]dd yours to the `allow` list/);
+  });
+
+  // The file survives the emptying, and an adopter who reads it as jen's will never put a rule
+  // in it. The example beside it is the thing most likely to be pasted over a file that already
+  // has contents, which is why it is shown as entries rather than as a document.
+  it('says the file is the project\u2019s, in force in a dispatched run, and shows entries not a file', () => {
+    expect(chapter).toMatch(/`\.claude\/settings\.json` is still yours/);
+    expect(chapter).toMatch(/in force in a dispatched run/);
+    expect(chapter).toMatch(/[Ee]ntries you add to the list already there, not a file to paste over/);
+    expect(chapter, 'a whole-file example is what gets pasted over a file that already has one').not.toContain('"permissions"');
+  });
+
+  // `jen update` never rewrites the file, so an install made before the emptying still carries
+  // the entries jen wrote. Nothing removes them and nothing reports them; the documentation is
+  // the only thing that reaches that install.
+  it('tells an existing install the entries jen once wrote are theirs to keep or remove', () => {
+    expect(chapter).toMatch(/installed before this changed/);
+    expect(chapter).toMatch(/to keep or to remove/);
+    expect(chapter).toMatch(/no version you take will empty it for you/);
+  });
+});
+
+/**
  * What a session receives, which the adopter is the only one who can supply.
  *
  * The failure this documentation prevents is quiet in both directions: a suite that cannot
@@ -76,10 +124,11 @@ describe('the ownership boundary', () => {
 describe('the environment chapter', () => {
   const chapter = readme.slice(at('### 5. Give the stages'), at('### 6. Take a later version'));
 
-  // Beside the permissions section deliberately: that one says a project's own checks must be
-  // allowed to run, and this says how those same commands are given what they read.
+  // Beside the permissions section deliberately: the two answer neighbouring halves of one
+  // question. That one says a project's own commands run without being named in advance, and
+  // this says how those same commands are given what they read.
   it('sits with the permissions guidance, and says what reaches a session', () => {
-    expect(at('### 4. Grant the permissions the stages need')).toBeLessThan(at('### 5. Give the stages'));
+    expect(at('### 4. Permissions')).toBeLessThan(at('### 5. Give the stages'));
     expect(chapter).toMatch(/set on the runner reaches every stage|reaches every stage's session/);
   });
 
@@ -177,6 +226,20 @@ describe('the runner chapter', () => {
     expect(chapter).toMatch(/dies with the process that launched it/i);
     expect(chapter).toMatch(/a session is still working this/);
     expect(chapter).toMatch(/hung session hangs the loop/i);
+  });
+
+  /**
+   * The one prerequisite whose failure does not present as itself.
+   *
+   * `--permission-prompts` is rejected as an unknown option below 2.1.259, and an unknown
+   * option is refused before the session starts — no session, no transcript, and a run that
+   * reports a stage which was dispatched and did nothing. An adopter reading that has no
+   * reason to look at their CLI version, so the documentation has to have said it first.
+   */
+  it('states the assistant CLI version the pipeline requires, and what being below it looks like', () => {
+    expect(chapter).toMatch(/Claude Code 2\.1\.259 or later/);
+    expect(chapter).toMatch(/refused before the session starts/);
+    expect(chapter).toMatch(/dispatched and did nothing/);
   });
 
   it('names every credential a runner needs, under the name the runner reads', () => {
