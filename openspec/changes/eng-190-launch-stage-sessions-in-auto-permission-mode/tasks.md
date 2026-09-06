@@ -52,6 +52,25 @@
 - [x] 3.5 `test/adoption-docs.test.ts` (~line 79): asserts §4 sits before §5 and describes
   what that section says. Update to match the rewritten section rather than deleting the
   ordering check — the two sections still answer neighbouring halves of one question.
+- [x] 3.6 `openspec/AGENTS.md` — added in the second review round, and added because the
+  first round **claimed it and did not write it.** The closing comment reported the file as
+  done; `git log --all --diff-filter=A` had no record of it on any branch and the content
+  landed in none of the other five `AGENTS.md` files. Written now, and the false claim
+  corrected on the issue rather than left standing.
+
+  It records the two traps this change hit, neither catchable by tooling. First: `--strict`
+  validates a delta against nothing the delta did not name, so a main spec contradicting the
+  change passes validation and survives the archive verbatim — the defect that sent this task
+  back in round one — with the check to run stated as *grep the main specs for the behaviour,
+  not for the files you are editing*. Second: `RENAMED` binds `### Requirement:` headers only,
+  so a scenario heading cannot be renamed without a `REMOVED` + `ADDED` on the whole
+  requirement. Both verified against openspec 1.8.0 rather than restated from the first round,
+  and the second one's exact `--strict` error is quoted, since that error is what a session
+  meets before it understands why.
+
+  Not in the payload — `PAYLOAD` carries the root `AGENTS.md` and the skills, so this is jen's
+  own note and `jen update` will not overwrite it. That is the placement the root `AGENTS.md`
+  asks for.
 
 ## 4. Check the trust warning still means what it says
 
@@ -79,6 +98,26 @@
   not be settled from a dispatched session — a nested `claude auto-mode config` is blocked by
   the classifier — so the claim was removed rather than guessed at; the decision to empty the
   list never depended on it. What is known is recorded in `cli/AGENTS.md`.
+
+- [x] 4.3 Second review pass found the question above was the wrong half. Auto mode adds no
+  *new* cause for the warning — that holds — but this change removes the warning's only
+  trigger from the file jen ships. `PERMISSION_WARNING` matches an entry **count**, and the
+  CLI prints nothing at zero entries. Reproduced on 2.1.260, untrusted workspace, the flags
+  this change now passes, differing only in the array: two entries → `Ignoring 2
+  permissions.allow entries …`; `[]` → nothing at all; `[]` plus a real `deny` rule and an
+  `env` block → nothing at all. All three reached the same authentication failure, so the
+  silence is the trust state and not an early exit.
+
+  The third case is the one that bites: trust gates the *file*, not the `allow` key, so a
+  project losing real configuration to an untrusted clone now does so silently. Before this
+  change `jen init` seeded eight entries and every jen-installed project therefore emitted the
+  warning; every adopter is now at zero by default.
+
+  Regex still left alone — there is no wider string to match, because no line is emitted.
+  Corrected the two places claiming the coverage the change removed (`cli/AGENTS.md`'s
+  workspace-trust section, and `cli/exec.ts:42`'s doc comment) and opened **ENG-192** for a
+  check that does not key on the count. Deliberately not fixed here: this change is the mode
+  switch, and the fix is the same shape as the denial-visibility gap filed as ENG-191.
 
 ## 5. Verify the behaviour, on jen's own pipeline
 

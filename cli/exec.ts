@@ -35,9 +35,19 @@ import type { Role } from './stages.js';
  * module exists in the shape it does.
  *
  * Matched on the *symptom* rather than on the mechanism, which is what makes it worth more
- * than the mechanism it defends. `CLAUDE_CONFIG_DIR` is undocumented; if it is ever
- * withdrawn, or the path is written wrong, this fires on the first second of the run instead
- * of the session being denied its own build halfway through with nobody there to grant it.
+ * than the mechanism it defends: `CLAUDE_CONFIG_DIR` is undocumented, and if it is withdrawn
+ * or the path is written wrong, this fires on the first second of the run instead of the
+ * session being denied its own build halfway through with nobody there to grant it.
+ *
+ * **But the symptom is an entry count, so this is silent on an empty `allow` array.** The CLI
+ * prints nothing at all at zero entries — verified on 2.1.260, two otherwise-identical
+ * untrusted runs — so a failed trust write is indistinguishable from a healthy start for any
+ * project that has not written allow rules of its own. As of ENG-190 that is what jen ships:
+ * `scaffold/settings.json` grants nothing, and the coverage above is now conditional on the
+ * adopter having added entries jen no longer asks for. Trust gates the *file*, not this one
+ * key, so a project whose settings carry only `deny` rules or an `env` block loses them to an
+ * untrusted clone with nothing on stderr to say so. Widening the net needs a check that does
+ * not key on the entry count — ENG-192.
  */
 export const PERMISSION_WARNING = /Ignoring \d+ permissions\.allow entries/;
 

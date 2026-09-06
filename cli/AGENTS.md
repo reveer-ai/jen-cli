@@ -338,10 +338,36 @@ config, ssh's known-hosts, and npm's cache, which a stage's own build reaches fo
 away.
 
 **`CLAUDE_CONFIG_DIR` is not in `claude --help`.** The mitigation is worth more than the
-choice: the run scans the session's stderr for that warning and fails the run on it. The check
-is on the *symptom*, so it holds whatever the mechanism, and it catches the variable being
-withdrawn as readily as a path written wrong. Do not soften it into a warning — the whole
-point is that it turns a denial found halfway through a run into a first-second failure.
+choice: the run scans the session's stderr for that warning and fails the run on it. Do not
+soften it into a warning — the whole point is that it turns a denial found halfway through a
+run into a first-second failure.
+
+**Know what that check does and does not cover, because ENG-190 narrowed it.** The symptom it
+matches is an *entry count*, and the CLI prints no such line when the count is zero. Verified
+on 2.1.260, two untrusted runs differing only in the array, both reaching the same
+authentication failure so the silence is not a run that stopped early:
+
+| `permissions.allow` | stderr, untrusted |
+|---|---|
+| `["Bash(npm run build:*)", "Bash(git:*)"]` | `Ignoring 2 permissions.allow entries …` |
+| `[]` | **nothing at all** |
+
+So a failed trust write is indistinguishable from a healthy start unless the project wrote
+allow entries. Before ENG-190 that was safe to ignore, because `jen init` seeded eight of them
+and every jen-installed project therefore emitted the warning. Now the scaffold grants nothing,
+and every adopter is at zero by default.
+
+The tempting reading — *no entries, nothing lost, correct silence* — is wrong, and the note at
+the top of this section is why: what trust gates is the file, not any one key in it. A project
+whose settings carry a `deny` rule and an `env` block and an empty `allow` loses all of it to
+an untrusted clone and prints nothing; confirmed on 2.1.260 with exactly that file. The
+guarantee that this check catches `CLAUDE_CONFIG_DIR` being withdrawn now holds only for
+projects that happen to have written allow rules.
+
+Do not fix that by loosening the regex — there is no wider *string* to match, because the CLI
+emits no line at all. It needs a check that does not key on the entry count: verifying the
+trust store took, or asserting the settings file was honoured by something other than a count.
+That is **ENG-192**, deliberately not ENG-190, which was the mode switch.
 
 **Auto mode adds nothing to stderr that `PERMISSION_WARNING` could confuse with a trust
 failure.** Checked rather than assumed, because the two causes would be indistinguishable if
