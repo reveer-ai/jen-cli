@@ -67,7 +67,10 @@ judges each action against 17 allow rules, 69 soft-denies and 1 hard-deny
 - `repo-scaffold` — the tracked assistant configuration no longer carries permissions the
   workflow's stages depend on; it is a seat for a project's own rules.
 - `adoption-docs` — the documentation stops telling an adopter to enumerate their check
-  commands, and states the CLI floor the pipeline requires.
+  commands, and states the CLI floor the pipeline requires. The environment requirement is
+  modified too, for one clause: it describes the permissions section it sits beside, and that
+  description is what this change reverses. A requirement inside a capability the delta names
+  is not covered by naming the capability.
 - `stage-conventions` — the guarantee that a stage may run what its instructions require is
   met by the per-action arrangement rather than by granting the workflow's own tooling in
   the configuration jen writes. Named here because the capability says the opposite in its

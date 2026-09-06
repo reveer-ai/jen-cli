@@ -47,6 +47,17 @@ change that is `grep -ril "permission\|grant" openspec/specs/`, then reading eac
 whether it stays true, rather than assuming the three you had open are the three that exist.
 Cheap, and it is the only thing standing between a contradiction and the archive.
 
+**Run it at requirement granularity, not capability granularity.** ENG-190 hit this trap twice —
+the second time *after* naming the capability. The delta modified `adoption-docs`, and a different
+requirement in that same file still described its neighbour as the neighbour used to read
+("the permissions section says a project's own checks must be granted the commands they run"),
+which the change had just made false. `--strict` passed, because the delta was internally
+consistent; the grep hit the file, and the reading stopped at *that capability is already in the
+delta*. It is not. Only the requirements you named are. A capability you are editing is exactly
+where a stale cross-reference hides, because sibling requirements quote each other's rationale
+and nothing checks that the quote still holds — so read every requirement in a capability you
+touch, not only the ones you are rewriting.
+
 ## A scenario heading is its identity, so renaming one reads as deleting it
 
 `RENAMED Requirements` exists, and it binds `### Requirement:` headers only — a `FROM`/`TO` pair.
