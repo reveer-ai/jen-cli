@@ -185,10 +185,17 @@ No data, no persisted state, no adopters. The steps that need ordering:
 1. `scaffold/settings.json` and jen's own `.claude/settings.json` empty together, the
    latter by hand, before any verification of approve or merge.
 2. The change ships as a minor release. `dist/` carries the argv, and a runner installs jen
-   fresh, so nothing reaches a scheduled run until that release is published.
-3. Rollback is reverting the argv. There is no state to unwind — an emptied settings file
-   costs nothing to refill, and the version floor only ever gated a flag we would stop
-   passing.
+   fresh, so *the argv* reaches no scheduled run until that release is published. jen's own
+   `.claude/settings.json` is gated by nothing — it travels in the repository, and `#trust`
+   exists so a clone's own file is honoured, so it is in force the moment a session clones
+   this branch. Until the release lands, jen's own pipeline therefore runs the old argv
+   against the emptied file: `acceptEdits` with nothing to match, denying every shell
+   command, which is worse than either endpoint.
+3. Rollback refills the settings files first and reverts the argv second, or refills them and
+   stops. Reverting the argv *alone* restores exactly the combination above, so the refill is
+   not the costless afterthought — it is the half that has to go first. There is still no
+   state to unwind, both steps are cheap, and the version floor only ever gated a flag we
+   would stop passing.
 
 ## Open Questions
 

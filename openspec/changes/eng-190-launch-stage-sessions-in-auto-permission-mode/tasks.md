@@ -168,7 +168,13 @@
 
 ## 5. Verify the behaviour, on jen's own pipeline
 
-Task 2.3 must be done first, or every result here is measuring a `gh` bypass.
+Two preconditions, and the second is not a box on this list. Task 2.3 must be done first, or
+every result here is measuring a `gh` bypass. **The runner must also be dispatching from a jen
+built from this branch**, because the change's two halves travel by different routes: the argv
+arrives in `dist/` and a stale runner still passes `acceptEdits`, while jen's own emptied
+`.claude/settings.json` arrives through the clone and is already in force. That combination
+denies every shell command. **So a denial in 5.1 or 5.2 is a stale runner until that is ruled
+out** — it is not evidence against the change.
 
 - [ ] 5.1 A stage session runs `npm install` and a one-off `node -e` with nothing in the
   settings file granting either. This is the failure ENG-179 hit twice; it is the change's
@@ -197,8 +203,13 @@ Task 2.3 must be done first, or every result here is measuring a `gh` bypass.
 - [x] 6.1 `npm test` and typecheck pass.
 - [x] 6.2 Add a changeset. Minor: the pipeline's behaviour changes and a host prerequisite
   appears that did not exist before.
-- [x] 6.3 `dist/` is rebuilt from `cli/exec.ts` carrying the new argv. A runner installs jen
-  fresh on every run, so the change does not reach a scheduled run until the release ships.
+- [x] 6.3 `dist/` is rebuilt from `cli/exec.ts` carrying the new argv. That half of the change
+  reaches a scheduled run only when the release ships, since a runner installs jen fresh on
+  every run. The other half is not gated by anything: jen's own emptied
+  `.claude/settings.json` travels in the repository and is in force for every session that
+  clones this branch. Between the two, jen's own pipeline runs the old argv against the empty
+  array — `acceptEdits` with nothing left to match, which denies every shell command — and
+  publishing the release is what closes that window.
 - [x] 6.4 Open the follow-up task for denial visibility — surfacing the stream's
   `permission_denials` through `verdict()`. `design.md` — Open Questions has the reasoning.
   Opened as ENG-191, related to this task rather than under it.
