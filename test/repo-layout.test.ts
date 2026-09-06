@@ -53,6 +53,21 @@ describe('the repository layout', () => {
     expect(tracked).toContain('openspec/changes/AGENTS.md');
     expect(tracked).not.toContain('openspec/AGENTS.md');
   });
+
+  // jen is its own project, so a stage session reads this file the way an adopted repository's
+  // session reads its own. An entry here resolves at step 1, before the classifier — so a grant
+  // is a bypass jen's pipeline has and no adopter does, which is why ENG-190 had a human empty
+  // it. Nothing else would notice one going back in: the file is not in the payload, no other
+  // test reads it, and the calls it exempts succeed either way — they just stop being judged.
+  // `cli/AGENTS.md` sends a contributor to `.claude/settings.local.json` instead; this is the
+  // half of that a note cannot enforce.
+  it('grants nothing in jen\'s own assistant settings', () => {
+    expect(tracked, 'the file is tracked, for the reason the repo-scaffold spec gives').toContain('.claude/settings.json');
+
+    const permissions = JSON.parse(readRepoFile('.claude/settings.json')).permissions;
+    expect(permissions, 'the permissions object stays as the seat, as it does in the scaffold').toBeDefined();
+    expect(permissions.allow, 'a contributor\'s own grants belong in .claude/settings.local.json').toEqual([]);
+  });
 });
 
 describe('.gitignore', () => {

@@ -13,7 +13,8 @@
 /.claude/skills/openspec-*/
 /.claude/commands/opsx/
 
-# per-install, never shared: MCP server ids differ from one install to the next
+# per-install, never shared: MCP server ids differ from one install to the next, and a
+# contributor's own permission grants belong here rather than in the tracked settings file
 /.claude/settings.local.json
 
 # local agent scratch: embedded git repos, never part of the workflow

@@ -59,6 +59,26 @@
   jen's own `.claude/settings.json` are different files with different jobs. Both are now
   empty of grants; the note's point about editing one not changing the other still holds and
   should stay.
+
+  **Revised again in round three, because task 2.3 made the surviving half false.** The note
+  still called jen's own file "a local config a contributor may add permissions to for jen's
+  own build" — fair while it was one, and no longer true once a person emptied it. jen is its
+  own project, so a stage session clones jen and reads that file exactly as an adopter's
+  session reads theirs: it is jen's *pipeline's* permission configuration, and an entry in it
+  is a step-1 bypass jen gets and no adopter does. Leaving the invitation standing pointed a
+  contributor at putting `Bash(gh:*)` straight back, which is the outcome ordering 2.3 ahead
+  of group 5 exists to prevent — and group 5 is still ahead of this task.
+
+  The clause is replaced with what the file is now, and the note names
+  `.claude/settings.local.json` as where a contributor's own grants go. That was the half with
+  no home anywhere: it is gitignored already, and nothing said it was the seat. The ignore
+  rule's comment now says so too, since it gave only the MCP-id reason.
+
+  Guarded in `test/repo-layout.test.ts` rather than left to the note. Review flagged the test
+  as optional and the implementer's call; it is worth its three lines because the failure is
+  silent in a way the round's other findings were not — the file is not in the payload, no
+  other test reads it, and a restored entry changes nothing anyone would notice except that
+  the two calls this change exists to submit to judgment stop being judged.
 - [x] 3.4 `cli/AGENTS.md` (~line 31 and ~line 317): the two workspace-trust notes. Trust is
   still the invocation's job and still keeps a project's own configuration in force, but both
   notes justify it by the allow list jen ships, which is now empty. Reword to name what trust
