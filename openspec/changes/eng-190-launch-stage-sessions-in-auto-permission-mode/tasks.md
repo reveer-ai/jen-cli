@@ -23,11 +23,25 @@
   what the scaffold now says. Replace it with one asserting the scaffold grants nothing, and
   rewrite the comment above it — it currently explains why the shared floor is the right
   thing to assert, and that reasoning is what changed.
-- [ ] 2.3 **A person applies this one.** Empty the `allow` array in jen's own
+- [x] 2.3 **A person applied this one.** Empty the `allow` array in jen's own
   `.claude/settings.json`. An agent cannot write that file: it grants the running session its
   permissions and the harness denies the write, correctly. Do this before task 5 — with the
   file left as it is, jen's pipeline keeps a `Bash(gh:*)` bypass no adopter would have, and
   the approve/merge verification measures the wrong configuration.
+
+  **Done in `7ebc56b`.** All nine entries removed, `permissions` object kept, so the file is
+  now byte-equivalent to what `jen init` writes an adopter. Verified rather than taken: the
+  commit touches that one file, removes exactly the nine, and the tree is clean. Typecheck,
+  build, 443 tests and `--strict` all pass with the grants gone — nothing in jen's own suite
+  reads that file, so nothing depended on them.
+
+  Deleting the file outright was considered and rejected. It would satisfy group 5 equally —
+  no `Bash(gh:*)` either way — but the `repo-scaffold` delta this change ships says the file
+  SHALL still be written and tracked, and jen dropping its own copy while shipping that
+  argument is a divergence someone would trip over later. Emptying costs the same and puts jen
+  in exactly the configuration an adopter gets, which is the whole point of the task.
+
+  **Group 5 is now unblocked.** It stays test-task's work and stays unchecked here.
 
 ## 3. Documentation
 
