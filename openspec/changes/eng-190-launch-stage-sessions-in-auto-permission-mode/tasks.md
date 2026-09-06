@@ -176,27 +176,94 @@ arrives in `dist/` and a stale runner still passes `acceptEdits`, while jen's ow
 denies every shell command. **So a denial in 5.1 or 5.2 is a stale runner until that is ruled
 out** — it is not evidence against the change.
 
-- [ ] 5.1 A stage session runs `npm install` and a one-off `node -e` with nothing in the
+**Neither precondition could be met, and that is the finding rather than an obstacle to it.**
+There is no runner: `jen` is installed nowhere on the host, no `jen run`/`jen watch` process or
+launchd agent exists, and every stage on this task ran as an attended local session. So there
+was no stale runner to rule out — and equally, "on jen's own pipeline" could not be performed
+as written, because no pipeline is running. The interim window 6.3 describes is inert for the
+same reason. `gh` here holds two human accounts and none of the three registered applications.
+
+5.1–5.3 were therefore exercised on their mechanism, from an attended session with jen's own
+emptied `.claude/settings.json` in force and auto mode active. The attribution is clean:
+`~/.claude/settings.json` carries no `permissions` block, there is no
+`.claude/settings.local.json`, and the tracked array is `[]` — so the classifier alone
+permitted each of these. 5.4 and 5.5 need two distinct registered identities and are a human's;
+they are written up on the issue.
+
+The shape difference from a dispatched session is `-p` with `--permission-prompts none`, which
+turns a soft-deny into a denial instead of a prompt. It did not mask anything here: the two
+actions the classifier refused in this session came back as denials with no prompt offered, so
+the denial path has the same shape, and every result below is an outright allow rather than a
+prompt someone answered.
+
+- [x] 5.1 A stage session runs `npm install` and a one-off `node -e` with nothing in the
   settings file granting either. This is the failure ENG-179 hit twice; it is the change's
   primary claim.
-- [ ] 5.2 A design-stage session completes a tracker attachment upload — `curl PUT` to a
+
+  **Holds.** In a workspace whose `.claude/settings.json` is `{"permissions":{"allow":[]}}`,
+  `npm install` against a manifest and `node -e 'console.log(6*7)'` both ran. So did the whole
+  of this session's work in jen's own checkout under the same empty array — `npm test` (444),
+  `npm run build`, `npm run typecheck`, `npx openspec validate --all --strict`, `git`, `gh`,
+  `node`.
+
+  Checked one step past the task, because the allow list predicts otherwise:
+  `Declared Dependencies` covers a manifest-declared install and **explicitly not** an
+  agent-chosen package name, which is the commoner implementation act. `npm install nanoid`
+  ran anyway — falling outside an allow rule sends an action to the classifier, it does not
+  deny it. Recorded in `cli/AGENTS.md`, since reasoning the other way is the natural mistake.
+- [x] 5.2 A design-stage session completes a tracker attachment upload — `curl PUT` to a
   signed URL. This is the second observed failure, and it is the step jen's own root
   `AGENTS.md` mandates.
-- [ ] 5.3 The tracker's MCP tools still work: a stage announces itself, comments, and moves
+
+  **Holds.** A real `prepare_attachment_upload` against this issue, then
+  `curl -X PUT --data-binary` to the returned `storage.googleapis.com` URL replaying all four
+  signed headers verbatim: **HTTP 200**. Deliberately not finalized with
+  `create_attachment_from_upload` — the mechanism under test is the PUT, and testing has no
+  artifact to attach, so the upload is orphaned and nothing appears on the issue.
+- [x] 5.3 The tracker's MCP tools still work: a stage announces itself, comments, and moves
   a task. Under `auto` these reach the classifier where they did not before, and
   `External System Writes` is the rule they meet. Publishing the task asked for is carved
   out of it; resolving a PR thread the session did not itself create is the clause that
   reads adverse. Exercise a thread resolution specifically.
+
+  **Holds, including the adverse clause.** The announcement went up through the tracker MCP,
+  and the status move at the end of this run went the same way. The clause worth the task:
+  `resolveReviewThread` on `PRRT_kwDOTyXn5s6fsg_L` — a thread this session did not create —
+  returned `isResolved: true`. Chosen already-resolved so the probe changed nothing.
+
+  The rule text is now read rather than inferred, from `claude auto-mode defaults`, which the
+  earlier note recorded as unreachable — that was `auto-mode config`, and `defaults` is a
+  different command that works from an attended session. `External System Writes` is a
+  soft-deny, and **under `--permission-prompts none` every one of the 69 soft-denies is a hard
+  denial for a stage**, which is what makes that list rather than the allow list the one to
+  check a new pipeline act against. In `cli/AGENTS.md`.
 - [ ] 5.4 `gh pr review --approve` from `review-task`'s identity, on a PR opened by
   `design-task`'s. This is the open question in `design.md` — whether the classifier reads
   two registered identities in one pipeline as "an automation the agent controls" under
   `Self-Approval`. Record the verdict and, if denied, the reason the classifier gave.
+
+  **Not performable from here, and left unchecked rather than argued around.** It needs two
+  distinct registered applications; this host has one identity and it is the pull request's
+  author, which is why all six review rounds recorded `COMMENT` and the host refused before
+  the classifier was ever consulted. `Self-Approval`'s text does not settle it either way —
+  whether one pipeline application counts as "an automation the agent controls" over another
+  is the runtime judgment the task exists to obtain. Still open; a human's.
 - [ ] 5.5 `gh pr merge --auto` from `deliver-task`'s identity. `Merge Without Review` carves
   out `--auto` on a repo with server-enforced required reviews, which is jen's merge gate, so
   this is expected to pass — confirm it rather than assuming.
+
+  **Not performable from here.** The merge is `deliver-task`'s act on this very pull request,
+  and testing performing it would be the stage overreach the conventions name. The rule text
+  read from `auto-mode defaults` does carry the carve-out verbatim — "`gh pr merge --auto` on
+  a repo with required-reviews branch protection is NOT this rule" — which is evidence for the
+  expectation and not the confirmation the task asks for. Still open; falls to delivery or to a
+  human.
 - [ ] 5.6 If 5.4 or 5.5 is denied, do not fix it here. Record the classifier's reason and
   open a task for it. The fix depends on the answer, and this change's job was to obtain the
   answer.
+
+  **Nothing to record yet** — neither was reached, so there is no classifier reason to carry
+  and no task to open. This stays open behind 5.4 and 5.5 rather than being closed empty.
 
 ## 6. Ship
 

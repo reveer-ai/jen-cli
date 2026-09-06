@@ -407,6 +407,36 @@ dispatched session at all: a nested `claude auto-mode config` is itself blocked 
 classifier, and working around that denial is the one thing not to do. Settle it from an
 attended session or leave it open.
 
+**The rule set itself reads from an attended session: `claude auto-mode defaults`.** The
+blocked command above is `auto-mode config`; `defaults` is a different one and it prints the
+whole thing as JSON — on 2.1.260, 17 allow rules, 69 soft-denies, 1 hard-deny (Data
+Exfiltration), plus the environment questions. Read it there rather than inferring a verdict
+from a denial message, which names the rule and nothing else.
+
+**What makes the soft-deny list the one to check: the invocation passes
+`--permission-prompts none`, so a soft-denied action has nobody to ask and the denial is
+final.** All 69 are hard denials for a stage. A new pipeline act is checked against that list,
+not against the allow list.
+
+**But do not read allow-list membership backwards.** `Declared Dependencies` covers
+`npm install` only for packages already in the manifest, and explicitly not an agent-chosen
+name or an install after the session edited the manifest — which is the commonest
+implementation act there is, and would predict a denial. It is not denied: falling outside an
+allow rule only means the classifier judges the action on its merits. Measured on 2.1.260,
+empty allow list, nothing in any user- or local-scope settings: `npm install` from a manifest,
+`npm install <chosen package>`, `node -e`, `npm test`, `npm run build`, `npx openspec validate`,
+`git`, `gh`, and `curl -X PUT` of a file to a Linear signed upload URL all ran; the tracker
+MCP posted a comment, and `resolveReviewThread` on a thread the session had not created
+returned `isResolved: true` — the `External System Writes` clause that reads adverse to the
+pipeline does not bite. Denials in the same session were `Credential Exploration` (scanning
+the environment for credential-shaped names) and spawning a nested `claude`.
+
+Measured from an attended session rather than a dispatched one, which is the limit worth
+naming: what could not be reached that way is the two-identity case — `gh pr review --approve`
+from one registered application on a pull request another opened, and the merge behind it.
+Those need the pipeline's own identities and a runner, and `Self-Approval` stays open until
+one runs.
+
 **The clone path must be `realpath`'d before the trust entry is keyed by it.** This is not
 tidiness and it is not obvious: on macOS the system temporary directory is a symlink, so
 `mkdtemp` hands back `/var/folders/…` while the session resolves its own workspace to
