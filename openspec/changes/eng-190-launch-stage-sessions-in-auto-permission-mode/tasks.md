@@ -65,13 +65,20 @@
   in `cli/AGENTS.md` that the two were checked and are distinguishable, so the next session
   does not have to re-establish it.
 
-  **It does not match — auto prints nothing on stderr when it discards rules.** On 2.1.260,
-  a trusted workspace whose settings carry `Bash(npm run build:*)` and
+  **It does not match — a trusted `auto` run prints nothing on stderr.** On 2.1.260, a
+  trusted workspace whose settings carry `Bash(npm run build:*)` and
   `Bash(npm run typecheck:*)` produced empty stderr under `--permission-mode auto`, while the
   same workspace untrusted printed `Ignoring 5 permissions.allow entries …` byte-identically
   under `acceptEdits` and `auto`. Both runs ended at the same authentication failure, so the
   silence is the trust state and not a run that stopped early. Regex left alone; recorded in
   `cli/AGENTS.md`.
+
+  Corrected in review: this answers the question the task asked and **does not** establish
+  that `auto` discards package-manager run commands, which the first pass wrote into four
+  documents as fact. Silence is equally consistent with *not discarded*. The mechanism could
+  not be settled from a dispatched session — a nested `claude auto-mode config` is blocked by
+  the classifier — so the claim was removed rather than guessed at; the decision to empty the
+  list never depended on it. What is known is recorded in `cli/AGENTS.md`.
 
 ## 5. Verify the behaviour, on jen's own pipeline
 

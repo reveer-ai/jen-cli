@@ -18,12 +18,24 @@ auto from looking. That inverts the second half of the task. The question is not
 `auto` makes the entries unnecessary; it is whether we want the pipeline's own git-host
 calls exempt from review.
 
-**Some of the entries are discarded regardless.** On entering `auto`, allow rules granting
-arbitrary code execution are dropped — blanket `Bash(*)`, wildcarded interpreters,
-*package-manager run commands*, `Agent`, and `Monitor`. `Bash(npm run build:*)`,
-`Bash(npm run lint:*)` and `Bash(npm run typecheck:*)` are that third category. They do not
-become redundant under the new mode; they stop existing. Anything the documentation calls a
-narrow rule, `Bash(npm test)` among them, survives.
+**Whether some entries are discarded regardless is not established, and the decision does
+not rest on it.** An earlier draft of this design asserted that `auto` drops
+package-manager run commands and wildcarded interpreters from `permissions.allow` on entry,
+and named three of jen's four npm entries as that category. Nothing in the record supports
+it at that specificity. What 2.1.260 actually carries is (a) an opt-in setting, default
+false, that suspends *every* Bash allow rule while auto mode is active, all-or-nothing rather
+than by category; (b) an advisory `/auto-mode-setup` review that *flags* entries "broad
+enough that auto mode either ignores them at runtime, or auto-approves destructive commands
+with no check" and offers to remove them, with the person deciding. So a runtime-ignored
+category does exist and is described by breadth — but `Bash(npm run build:*)` is a narrow
+rule, and nothing found says it is one of them.
+
+Left there deliberately rather than guessed at, because the conclusion does not need it. An
+entry is a step-1 bypass; that alone is the reason to empty the list rather than trim it, and
+it holds whether or not the mode would have dropped some of the entries anyway. Treating the
+weaker claim as settled would have been worse than dropping it: it is the claim that tells an
+adopter three of their old entries are already inert, and if they are not, those are live
+bypasses the advice argued them into keeping.
 
 **`--permission-prompts none` changes less than it appears to, and one thing that matters.**
 A `-p` run with no permission host already denies anything that would prompt. What the flag
@@ -143,7 +155,7 @@ the verification passes for the wrong reason.
 
 - **`PERMISSION_WARNING` gains a second cause.** `cli/exec.ts` greps stderr for
   `Ignoring \d+ permissions.allow entries` and reports it as "the workspace was never
-  trusted". Auto mode also discards allow rules, for an unrelated reason. If it announces
+  trusted". Auto mode may also set allow rules aside, for an unrelated reason. If it announces
   that in a message of the same shape, every run reports a trust failure that did not happen.
   → Check what auto mode prints when it drops rules, before trusting the existing regex.
   With the scaffold emptied there is nothing left in an adopter's file for auto to drop, but

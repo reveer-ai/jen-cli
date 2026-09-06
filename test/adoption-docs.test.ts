@@ -100,17 +100,31 @@ describe('the permissions chapter', () => {
   it('says the file is the project\u2019s, in force in a dispatched run, and shows entries not a file', () => {
     expect(chapter).toMatch(/`\.claude\/settings\.json` is still yours/);
     expect(chapter).toMatch(/in force in a dispatched run/);
-    expect(chapter).toMatch(/[Ee]ntries you add to the list already there, not a file to paste over/);
+    expect(chapter).toMatch(/[Ee]ntries you add, not a file to paste over/);
     expect(chapter, 'a whole-file example is what gets pasted over a file that already has one').not.toContain('"permissions"');
+  });
+
+  /**
+   * The chapter offers the file as the seat for a rule to permit *or* to deny, but the scaffold
+   * ships `permissions.allow` and nothing else. An adopter who takes up the deny half has one
+   * array in front of them, and a deny rule written into `allow` is a grant — the exact inversion
+   * of what they were reaching for. Whichever array the text names, it has to name the right one.
+   */
+  it('sends a deny rule to a deny list rather than to the allow list jen ships', () => {
+    if (!/to deny that it would otherwise let through/.test(chapter)) return;
+    expect(chapter, 'the chapter offers a deny rule, so it must say where one goes').toMatch(/`deny`/);
+    expect(chapter).toMatch(/a rule to deny goes in a `deny` list/);
   });
 
   // `jen update` never rewrites the file, so an install made before the emptying still carries
   // the entries jen wrote. Nothing removes them and nothing reports them; the documentation is
-  // the only thing that reaches that install.
+  // the only thing that reaches that install. It is also the only thing that can say the entries
+  // are worth removing rather than merely permitted to stay — nothing else will ever tell them.
   it('tells an existing install the entries jen once wrote are theirs to keep or remove', () => {
     expect(chapter).toMatch(/installed before this changed/);
     expect(chapter).toMatch(/to keep or to remove/);
     expect(chapter).toMatch(/no version you take will empty it for you/);
+    expect(chapter, 'a live bypass should not be described as costing nothing').not.toMatch(/costs you nothing/);
   });
 });
 

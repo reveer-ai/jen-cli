@@ -86,11 +86,11 @@ jen grants nothing on your behalf, deliberately. It chooses what it ships long b
 "Bash(terraform state:*)"
 ```
 
-Entries you add to the list already there, not a file to paste over the one jen wrote — replacing it drops whatever else the file holds, and that loss surfaces as behaviour in the middle of a run rather than as an error.
+Entries you add, not a file to paste over the one jen wrote — replacing it drops whatever else the file holds, and that loss surfaces as behaviour in the middle of a run rather than as an error. A rule to permit goes in the empty `allow` list jen leaves you; a rule to deny goes in a `deny` list beside it, which you add, since jen ships no `deny` key to fill in.
 
 The tracker's own tools are granted where the pipeline is invoked rather than here, since their identifiers differ per install.
 
-**On a project installed before this changed, the entries jen once wrote are still in your file, and they are yours** — to keep or to remove. `.claude/settings.json` is yours from the moment it exists and `jen update` never rewrites it, so no version you take will empty it for you. Keeping them costs you nothing directly. Be aware only that a matching entry resolves *before* the judgment is made rather than alongside it, so a broad one exempts everything it covers from review — `Bash(gh:*)`, which jen used to ship, covers the approving review and the merge at the end of the pipeline.
+**On a project installed before this changed, the entries jen once wrote are still in your file, and they are yours** — to keep or to remove. `.claude/settings.json` is yours from the moment it exists and `jen update` never rewrites it, so no version you take will empty it for you. Removing them is the better default. A matching entry resolves *before* the judgment is made rather than alongside it, so each one exempts everything it covers from review for as long as it sits there — and `Bash(gh:*)`, which jen used to ship, covers the approving review and the merge at the end of the pipeline. Treat every entry as live until you have deleted it; do not assume the newer mode has already made one inert.
 
 ### 5. Give the stages the configuration your commands read
 

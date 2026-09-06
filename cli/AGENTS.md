@@ -343,22 +343,39 @@ is on the *symptom*, so it holds whatever the mechanism, and it catches the vari
 withdrawn as readily as a path written wrong. Do not soften it into a warning — the whole
 point is that it turns a denial found halfway through a run into a first-second failure.
 
-**Auto mode also discards allow rules, and does not say so on stderr.** Checked rather than
-assumed, because the two causes would be indistinguishable if it did and every healthy run
-would report a trust failure that never happened. On 2.1.260, in a workspace whose
-`.claude/settings.json` carries `Bash(npm run build:*)` and `Bash(npm run typecheck:*)` —
-package-manager run commands, which auto drops on entry — a trusted run under
-`--permission-mode auto` prints **nothing at all** on stderr, while the same workspace
-untrusted prints `Ignoring 5 permissions.allow entries …` under `acceptEdits` and `auto`
-alike, byte-identical. So the mode did not change what the warning means and
-`PERMISSION_WARNING` needs no second clause; leave the regex as it is.
+**Auto mode adds nothing to stderr that `PERMISSION_WARNING` could confuse with a trust
+failure.** Checked rather than assumed, because the two causes would be indistinguishable if
+it did and every healthy run would report a trust failure that never happened. On 2.1.260, in
+a workspace whose `.claude/settings.json` carries `Bash(npm run build:*)` and
+`Bash(npm run typecheck:*)`, a trusted run under `--permission-mode auto` prints **nothing at
+all** on stderr, while the same workspace untrusted prints `Ignoring 5 permissions.allow
+entries …` under `acceptEdits` and `auto` alike, byte-identical. So the mode did not change
+what the warning means and `PERMISSION_WARNING` needs no second clause; leave the regex as it
+is.
 
-The one thing that evidence does not cover: both runs ended at `Failed to authenticate`
-before any tool ran, so this is the startup path only. It is the right path — the untrusted
-run died at exactly the same point and still printed the warning, which is what makes the
-trusted run's silence a real negative rather than a run that stopped too early — but if auto
-ever announces a discard at the first permission check instead, this note would not have
-caught it.
+**Do not restate that as "auto discards package-manager run commands on entry."** ENG-190
+asserted that in four places before review caught it, and it is not established. Read the
+negative for exactly what it is: silence on stderr is equally consistent with *dropped
+silently* and with *never dropped*, so this experiment cannot be cited as evidence that any
+particular rule is inert under `auto`. What 2.1.260 actually carries, found by reading the
+binary's strings rather than by running it:
+
+* an **opt-in** setting, default false, suspending *every* Bash/PowerShell allow rule while
+  auto mode is active — all-or-nothing, not by category;
+* an advisory `/auto-mode-setup` review that *flags* entries "broad enough that auto mode
+  either ignores them at runtime, or auto-approves destructive commands with no check" and
+  offers to remove them, with a person deciding.
+
+So a runtime-ignored category does exist and is described by *breadth*. Nothing found sizes
+it, and `Bash(npm run build:*)` is narrow. Treat any entry as live until it is deleted.
+
+Two limits on all of the above. Both runs ended at `Failed to authenticate` before any tool
+ran, so this is the startup path only — the right path, since the untrusted run died at the
+same point and still printed the warning, but a discard announced at the first permission
+check instead would not have been caught. And the mechanism cannot be settled from inside a
+dispatched session at all: a nested `claude auto-mode config` is itself blocked by the
+classifier, and working around that denial is the one thing not to do. Settle it from an
+attended session or leave it open.
 
 **The clone path must be `realpath`'d before the trust entry is keyed by it.** This is not
 tidiness and it is not obvious: on macOS the system temporary directory is a symlink, so

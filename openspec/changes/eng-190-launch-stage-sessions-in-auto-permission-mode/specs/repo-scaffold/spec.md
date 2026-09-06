@@ -10,8 +10,8 @@ jen SHALL NOT grant permissions in it. A session decides each action on what the
 so the workflow's stages depend on no entry jen could write there, and an entry written on a
 project's behalf is a guess at a toolchain that did not exist when jen shipped. Seeding the
 file with grants SHALL be understood as costing more than it gives: the entries mislead an
-adopter about what the pipeline needs, and some of them are discarded by the session's
-permission mode without saying so.
+adopter about what the pipeline needs, and each one exempts what it matches from the judgment
+every other action receives — silently, since nothing in a run reports that a rule matched.
 
 The file SHALL still be written and SHALL still be tracked. It is what the run establishes
 trust for, and a project that declares nothing on installation may declare something later

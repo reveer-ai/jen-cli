@@ -47,8 +47,8 @@ judges each action against 17 allow rules, 69 soft-denies and 1 hard-deny
   [`cli/AGENTS.md:29`](../../../cli/AGENTS.md) — so it is a step the task carries and a
   person applies.
 - **The adopter documentation reverses.** Today README §4 tells an adopter to add their
-  typecheck, lint, build and test commands. Under `auto` they usually need to add nothing,
-  and three of the four entries jen ships would be dropped by the mode regardless.
+  typecheck, lint, build and test commands. Under `auto` they usually need to add nothing at
+  all, so the section states what a session may do instead of asking for a list.
 - Not in scope, and named in `design.md` as a gap this change opens: reporting the
   `permission_denials` the stream already carries. Under `auto` a classifier denial becomes
   the main way a stage quietly fails to do its work, and jen surfaces nothing about it today.
@@ -68,6 +68,13 @@ judges each action against 17 allow rules, 69 soft-denies and 1 hard-deny
   workflow's stages depend on; it is a seat for a project's own rules.
 - `adoption-docs` — the documentation stops telling an adopter to enumerate their check
   commands, and states the CLI floor the pipeline requires.
+- `stage-conventions` — the guarantee that a stage may run what its instructions require is
+  met by the per-action arrangement rather than by granting the workflow's own tooling in
+  the configuration jen writes. Named here because the capability says the opposite in its
+  own words: without a delta it survives the archive verbatim and the specs assert both.
+- `project-install` — `.claude/settings.json` is created as the project's seat rather than
+  seeded with the permissions the stages depend on. Same reason: the sentence reads as an
+  instruction to seed grants, and a future session would act on it.
 
 ## Impact
 
@@ -78,7 +85,8 @@ judges each action against 17 allow rules, 69 soft-denies and 1 hard-deny
 - `test/exec.test.ts` — the `acceptEdits` assertion, plus the new flag.
 - `test/payload.test.ts` — "grants the tooling every stage is told to run" asserts the
   opposite of what the scaffold will now say.
-- `README.md` §4, and `cli/AGENTS.md`'s two notes on the settings files and on trust.
+- `README.md` §4, and `cli/AGENTS.md`'s two notes on the settings files and on trust, plus
+  a note recording what was and was not established about auto discarding allow rules.
 - A changeset. Behaviour changes for anyone running the pipeline and a host requirement
   appears, so minor rather than patch.
 - Workspace trust (`#trust`) stays and is not weakened by the empty list: it gates the
