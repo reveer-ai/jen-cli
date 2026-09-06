@@ -1,0 +1,4 @@
+schema: spec-driven
+created: 2026-09-06
+goal: Launch stage sessions under auto permission mode with prompts disabled,
+  and empty the shipped allowlist
