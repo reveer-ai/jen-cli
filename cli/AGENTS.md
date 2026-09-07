@@ -713,3 +713,34 @@ repository state — and the instruction to cite rather than conclude, which is 
 ageing into an assumption. **Two copies, and they must not drift**: whatever re-derives or
 supersedes what is written here updates the skill in the same change, and `test/merge-gate.test.ts`
 holds the shipped one to carrying its date and its vehicle.
+
+## `gh pr merge --auto` is unavailable on this repository, and the failure looks like a denial
+
+`Merge Without Review` carves out one merge command by name — "`gh pr merge --auto` on a repo
+with required-reviews branch protection is NOT this rule" — and ENG-190's `proposal.md` and
+`design.md` both rest their assessment of delivery's merge on it. **The carve-out is unreachable
+here.** Auto-merge is a *repository* setting, separate from the ruleset that supplies the
+required review, and on `reveer-ai/jen` it is off: `allow_auto_merge: false`. The call fails at
+the host:
+
+```
+GraphQL: Auto merge is not allowed for this repository (enablePullRequestAutoMerge)
+```
+
+**Observed 6 Sep 2026 on PR #28**, delivering ENG-190 itself, from a session running under
+`--permission-mode auto` with jen's own `.claude/settings.json` empty — so nothing granted the
+call at step 1 and the classifier alone permitted it. That is the half worth keeping: the
+classifier **allowed** `gh pr merge --auto`; GitHub refused it. A run that reads this failure as
+a permission verdict draws exactly the wrong conclusion about the rule it was trying to exercise,
+and ENG-190's tasks.md 5.5 asks a later session to exercise precisely this.
+
+So delivery merges plainly, and a plain merge is **not** what the carve-out names. What makes it
+go through is unrelated: `joshtgi` sits on ruleset `20589957` as a `bypass_mode: always` actor, a
+human rather than one of the three roles, which is why #22, #24 and #26 all merged while reading
+`reviewDecision: REVIEW_REQUIRED`. `setup-jen`'s gate check is about the roles holding a bypass
+and is untroubled by this one; it is simply the reason the gate is passable at all today, and it
+is worth knowing that the merge is not evidence about `Merge Without Review` either way.
+
+Turning the setting on is one repository-level change if a future task wants the carve-out
+actually exercised — ENG-193 inherits the neighbouring `Self-Approval` question and would be the
+natural place to decide it. Until then, do not record jen's merges as confirming 5.5.
