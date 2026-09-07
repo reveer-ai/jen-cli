@@ -72,29 +72,29 @@ It confirms the team and project with you, verifies that the pipeline's statuses
 
 Once it reports the project bound and the statuses satisfied, the pipeline can run.
 
-### 4. Grant the permissions the stages need — also yours
+### 4. Permissions — what a session may run
 
-The pipeline's stages run with nobody watching, and a denied permission is not a prompt an unattended run can wait out. A stage told to run your typecheck, lint, build, or tests, in a session that isn't permitted to run them, cannot finish: implementation can't hand off a change it was unable to check, and testing can't verify one.
+The pipeline's stages run with nobody watching, and a denied action is not a prompt an unattended run can wait out. That is why this section exists — but it is no longer a list you have to write.
 
-`jen init` writes `.claude/settings.json` with the permissions that are the same in every project — `git`, `gh`, and `openspec`, the tooling the workflow itself runs — plus `npm run build`, `npm run lint`, `npm run typecheck`, and `npm test`, a starting shape that assumes one ecosystem's conventional names.
+**A session judges each action on what the action is**, rather than matching it against permissions named in advance. Installing your declared dependencies, running your typecheck, your linter, your build, your tests, the one-off command a task turns out to need — ordinary development work needs no entry anywhere, and nothing about your project has to be enumerated for the pipeline to run it.
 
-**What jen cannot know is your project's own commands.** It has no way to tell whether your tests run under `pytest`, `cargo test`, `make check`, or something else. If your project is outside the ecosystem that starting shape assumes, you hold four entries that do nothing for you and lack every one that matters. Add yours to the `allow` list already there:
+jen grants nothing on your behalf, deliberately. It chooses what it ships long before your project exists, so any list it wrote would be a guess at a toolchain it never saw — granting entries you have no use for while missing every one you depend on.
+
+**`.claude/settings.json` is still yours, and still read.** `jen init` writes it with an empty `allow` list, as the seat for a rule you actually want: something to permit that a per-action judgment would otherwise stop, or to deny that it would otherwise let through. An entry you put there is in force in a dispatched run exactly as it is in a session you run yourself.
 
 ```json
-"Bash(pytest:*)",
-"Bash(ruff:*)",
-"Bash(mypy:*)"
+"Bash(terraform state:*)"
 ```
 
-Entries to add, not a file to paste over the one jen wrote — replacing it drops the permissions above, and that loss surfaces as denials in the middle of a run rather than as an error.
+Entries you add, not a file to paste over the one jen wrote — replacing it drops whatever else the file holds, and that loss surfaces as behaviour in the middle of a run rather than as an error. A rule to permit goes in the empty `allow` list jen leaves you; a rule to deny goes in a `deny` list beside it, which you add, since jen ships no `deny` key to fill in.
 
 The tracker's own tools are granted where the pipeline is invoked rather than here, since their identifiers differ per install.
 
-**This is a file you have to edit by hand, including on a project installed before this guidance existed.** `.claude/settings.json` is yours from the moment it exists — `jen update` never rewrites it, so no version you take will add these for you, and a project that predates this section will keep whatever list it was given until you change it.
+**On a project installed before this changed, the entries jen once wrote are still in your file, and they are yours** — to keep or to remove. `.claude/settings.json` is yours from the moment it exists and `jen update` never rewrites it, so no version you take will empty it for you. Removing them is the better default. A matching entry resolves *before* the judgment is made rather than alongside it, so each one exempts everything it covers from review for as long as it sits there — and `Bash(gh:*)`, which jen used to ship, covers the approving review and the merge at the end of the pipeline. Treat every entry as live until you have deleted it; do not assume the newer mode has already made one inert.
 
 ### 5. Give the stages the configuration your commands read
 
-The permissions above settle what a session is *allowed* to run. This settles what those commands can *read*.
+The section above settles what a session may *run*. This settles what those commands can *read*.
 
 **Everything you set on the runner reaches every stage's session**, under the same names you set it under. A suite that connects to `DATABASE_URL` finds `DATABASE_URL`; an integration test that reads `API_BASE_URL` finds that. This is deliberate rather than incidental: jen has no way to enumerate what your toolchain reads — `NODE_OPTIONS`, `CARGO_HOME`, `VIRTUAL_ENV`, a proxy setting, your own variables — and a list of the ones it could think of would be wrong in a way that surfaces as a stage failing at the first command that needed the name jen left out, mid-run, with nobody watching.
 
@@ -136,7 +136,9 @@ jen ships one runner: `jen watch`, a process you start and keep up. A runner jen
 
 ### What the runner needs
 
-Eleven values. Three per role, for the three applications `setup-jen` walked you through registering:
+**Claude Code 2.1.259 or later**, before anything else. jen launches every stage session with `--permission-prompts`, which an older CLI does not recognize — and an unrecognized option is refused before the session starts. There is no session, no transcript, and nothing in the run's output that distinguishes it from a stage that was dispatched and did nothing, so this is worth checking rather than discovering: `claude --version` on the machine the runner runs on, not on yours.
+
+Eleven values, then. Three per role, for the three applications `setup-jen` walked you through registering:
 
 ```
 JEN_GH_APP_ID_DESIGN         JEN_GH_APP_ID_DEV         JEN_GH_APP_ID_DELIVER

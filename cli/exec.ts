@@ -35,9 +35,19 @@ import type { Role } from './stages.js';
  * module exists in the shape it does.
  *
  * Matched on the *symptom* rather than on the mechanism, which is what makes it worth more
- * than the mechanism it defends. `CLAUDE_CONFIG_DIR` is undocumented; if it is ever
- * withdrawn, or the path is written wrong, this fires on the first second of the run instead
- * of the session being denied its own build halfway through with nobody there to grant it.
+ * than the mechanism it defends: `CLAUDE_CONFIG_DIR` is undocumented, and if it is withdrawn
+ * or the path is written wrong, this fires on the first second of the run instead of the
+ * session being denied its own build halfway through with nobody there to grant it.
+ *
+ * **But the symptom is an entry count, so this is silent on an empty `allow` array.** The CLI
+ * prints nothing at all at zero entries — verified on 2.1.260, two otherwise-identical
+ * untrusted runs — so a failed trust write is indistinguishable from a healthy start for any
+ * project that has not written allow rules of its own. As of ENG-190 that is what jen ships:
+ * `scaffold/settings.json` grants nothing, and the coverage above is now conditional on the
+ * adopter having added entries jen no longer asks for. Trust gates the *file*, not this one
+ * key, so a project whose settings carry only `deny` rules or an `env` block loses them to an
+ * untrusted clone with nothing on stderr to say so. Widening the net needs a check that does
+ * not key on the entry count — ENG-192.
  */
 export const PERMISSION_WARNING = /Ignoring \d+ permissions\.allow entries/;
 
@@ -327,6 +337,13 @@ export function verdict(report: SessionReport, exit: Exit, stderr: string): stri
  * can neither identify one nor ask — and a dispatched run has no asking branch. A session
  * launched with a bare skill name would therefore refuse to act, correctly, spending a
  * dispatch and presenting from outside as a stage failure.
+ *
+ * `-p` is the part of that which no configuration reaches: it is what makes an answer
+ * impossible, whatever else the invocation carries. `--permission-prompts none` sits beside
+ * it rather than in place of it, withholding the tools that ask a person instead of leaving
+ * them present with nobody to answer — so a session that would go looking for the asking
+ * branch does not hold one to reach for. Neither leaves a case in which the task may go
+ * unnamed.
  */
 export function prompt(request: RunRequest): string {
   return `/${request.skill} ${request.task}`;
@@ -960,7 +977,9 @@ export class Executor {
       args: [
         ...leading,
         '--permission-mode',
-        'acceptEdits',
+        'auto',
+        '--permission-prompts',
+        'none',
         '--output-format',
         'stream-json',
         '--verbose',

@@ -202,18 +202,19 @@ describe('the scaffold declaration', () => {
     }
   });
 
-  // A stage told to run something the harness denies cannot do its work, and an unattended
-  // run has nobody to grant the permission when it asks. The workflow's own tooling is the
-  // part jen can grant for every project — the adopter's own check commands are theirs to add,
-  // which is why this asserts the shared floor rather than the whole list.
-  it('grants the tooling every stage is told to run', () => {
+  // There is no shared floor to assert. A session decides each action on what the action is,
+  // so no stage depends on an entry here — and an entry is not a redundant grant but a bypass,
+  // matching before the judgment is made. The two calls it would exempt, `gh pr review
+  // --approve` and `gh pr merge`, are the two in the pipeline where an independent check is
+  // worth most. The array stays so the file keeps its shape: it is the seat a project's own
+  // rules take, and what the run establishes trust for.
+  it('grants nothing on a project’s behalf', () => {
     const settings = SCAFFOLD.find((file) => file.target === '.claude/settings.json');
-    expect(settings, 'the scaffold must carry assistant settings to grant anything in').toBeDefined();
+    expect(settings, 'the scaffold must still carry assistant settings for a project to fill').toBeDefined();
 
-    const allow = JSON.parse(readRepoFile(settings!.source)).permissions?.allow;
-    for (const tool of ['git', 'gh', 'openspec']) {
-      expect(allow, `every stage runs ${tool}`).toContain(`Bash(${tool}:*)`);
-    }
+    const permissions = JSON.parse(readRepoFile(settings!.source)).permissions;
+    expect(permissions, 'the permissions object is the seat, and outlives what jen put in it').toBeDefined();
+    expect(permissions.allow, 'jen grants no command for a toolchain it never saw').toEqual([]);
   });
 
   // The scaffold is the first thing an adopter reads after `jen init`, and it is written

@@ -24,11 +24,17 @@ Adding a `metadata:` key to a shipped skill for any other reason will therefore 
 
 ## The scaffold ships from `scaffold/`, not from jen's own `.claude/`
 
-`scaffold/settings.json` is what `jen init` writes into an adopter as `.claude/settings.json`. jen's own `.claude/settings.json` is a different file with a different job — a local config a contributor may add permissions to for jen's own build. Editing one does not change the other, deliberately: an adopter's seed should not shift because someone allowed a command here.
+`scaffold/settings.json` is what `jen init` writes into an adopter as `.claude/settings.json`. jen's own `.claude/settings.json` is a different file, and it is not the lesser one: jen is its own project, so a stage session clones jen and reads that file exactly as a session in an adopted repository reads theirs. It is jen's pipeline's permission configuration, in the same role an adopter's is — not a contributor's scratch space. Editing one does not change the other, deliberately: an adopter's seed should not shift because someone allowed a command here. Both are empty of grants as of ENG-190, which does not make them the same file; it means the point below applies to a change that *removes* an entry exactly as it did to one that adds one.
 
-**An agent cannot edit jen's own `.claude/settings.json`.** It is the file granting the running session its permissions, and the harness denies the write — correctly, since an agent widening its own allow list is what that guard exists for. So a change that adds permissions here lands in two halves that do not run in the same place: `scaffold/settings.json` an agent edits normally, and jen's own file a human applies by hand. Plan the task that way rather than discovering it at the write, and never route around the denial with a different tool.
+**So jen's own file stays empty, and a contributor's own grants go in `.claude/settings.local.json`.** An entry in `permissions.allow` resolves at step 1 of the classifier's decision order, *before* the classifier is consulted — so a grant here is a bypass jen's pipeline has and no adopter does. `Bash(gh:*)` in it exempts `gh pr review --approve` and `gh pr merge` from the judgment ENG-190 exists to put them under, and nothing in this repo would report that; emptying the array was a task a human applied by hand for exactly that reason. The pressure to undo it is real rather than hypothetical — with the array empty, `git`, `gh`, `openspec` and `npm` calls in jen's own repo reach the classifier where they used to short-circuit, so a contributor will notice and come looking for the file to fix. `.claude/settings.local.json` is the seat for that: gitignored, per-install, and it changes nobody's pipeline but the one on your own machine. `test/repo-layout.test.ts` holds the tracked file to an empty array, because an entry quietly restored there is invisible to every other check.
 
-**A workspace the harness has not trusted ignores the allow list entirely.** Installing 0.1.0 from a packed tarball into a scratch project and running `claude` there prints `Ignoring 8 permissions.allow entries from .claude/settings.json: this workspace has not been trusted`, and the session runs as though the file were empty. Trust is keyed by absolute path in `~/.claude.json`, so a dispatched run — a fresh clone at a path nothing has trusted — hits this every time, not just on a developer's first local run. Whatever the seed grants is inert until the invocation establishes trust, which makes it the invocation's problem rather than the scaffold's; the file itself is correct.
+**An agent cannot edit jen's own `.claude/settings.json`.** It is the file granting the running session its permissions, and the harness denies the write — correctly, since an agent widening its own allow list is what that guard exists for. So a change that touches permissions here lands in two halves that do not run in the same place: `scaffold/settings.json` an agent edits normally, and jen's own file a human applies by hand. Plan the task that way rather than discovering it at the write, and never route around the denial with a different tool.
+
+**They also do not reach a running pipeline at the same moment.** A permissions change that moves the launch argv in `exec.ts` as well lands through two channels with different latencies: the argv travels in `dist/`, so a runner — which installs jen fresh on every run — does not carry it until the release is published, while a `.claude/settings.json` edit travels in the repository and is in force for every session that clones the branch, `#trust` being there precisely so a clone's own file is honoured. In between, jen's own pipeline runs the *old* argv against the *new* file. For ENG-190 that pair was `acceptEdits` against an empty allow list, which denies every shell command and is worse than either endpoint. Sequence the two when planning, and note that rollback inherits the asymmetry reversed: reverting the argv alone restores the broken pair, so a settings file is refilled first rather than last.
+
+**A workspace the harness has not trusted ignores the project's own configuration entirely.** Installing 0.1.0 from a packed tarball into a scratch project and running `claude` there prints `Ignoring 8 permissions.allow entries from .claude/settings.json: this workspace has not been trusted`, and the session runs as though the file were empty. Trust is keyed by absolute path in `~/.claude.json`, so a dispatched run — a fresh clone at a path nothing has trusted — hits this every time, not just on a developer's first local run.
+
+That message names allow entries because that is what the file held at the time. What trust gates is the file, not any one key in it: an adopter's own permission rules, and whatever else `.claude/settings.json` carries. jen ships an empty allow list now, so there is nothing of jen's left for trust to protect — which changes who is harmed by getting it wrong, not whether it has to be done. It stays the invocation's problem rather than the scaffold's; the file itself is correct.
 
 Scaffold files are written only when absent, and never again — not by `update`, not by `init --force`. `--force` exists to resolve one ambiguity, whether an unstamped fixed path is jen's or the project's, and a filled-in `registry.yaml` is not ambiguous.
 
@@ -314,26 +320,122 @@ promise against an exit code.
 ## Workspace trust is the invocation's, and `-p` does not exempt a run from it
 
 `-p`'s own help says the trust dialog is skipped in non-interactive mode, which reads like a
-dispatched run is exempt. It is not. A fresh clone under `-p --permission-mode acceptEdits`
-still prints `Ignoring N permissions.allow entries from .claude/settings.json: this workspace
-has not been trusted` and runs **as though the file were empty** — on every run, since every
-clone is a path nothing has ever trusted. With nobody present, the consequence is the failure
-the seeded allow list exists to prevent.
+dispatched run is exempt. It is not. A fresh clone under `-p` still prints
+`Ignoring N permissions.allow entries from .claude/settings.json: this workspace has not been
+trusted` and runs **as though the file were empty** — on every run, since every clone is a
+path nothing has ever trusted. (Verified under `--permission-mode acceptEdits`, which is what
+the invocation carried at the time; the mode is not what the trust check reads.)
+
+What is lost is the project's own configuration. jen's seeded allow list was the original
+motive and no longer exists — the scaffold grants nothing as of ENG-190 — but the job is
+unchanged: an adopter's `.claude/settings.json` is where their own permission rules live, and
+an untrusted clone runs as though they had written none. With nobody present, a rule a project
+added precisely because its runs needed it is silently not in force.
 
 Three routes past it were verified against 2.1.220 rather than read off documentation:
-`--settings` (works, and rejected — it leaves the project's own file inert, so a project could
-never grant its runs a command jen does not ship, and jen cannot know a project's typecheck,
-build, or test commands); overriding `HOME` (works, and rejected — it also relocates git's
+`--settings` (works, and rejected — it leaves the project's own file inert, which is the one
+thing trust exists to prevent, and a project can grant its runs commands jen has never heard
+of); overriding `HOME` (works, and rejected — it also relocates git's
 config, ssh's known-hosts, and npm's cache, which a stage's own build reaches for); and
 `CLAUDE_CONFIG_DIR`, which moves exactly the one store that needs moving. That is what
 `exec.ts` uses, writing `projects[<clone>].hasTrustDialogAccepted` into a store the run throws
 away.
 
 **`CLAUDE_CONFIG_DIR` is not in `claude --help`.** The mitigation is worth more than the
-choice: the run scans the session's stderr for that warning and fails the run on it. The check
-is on the *symptom*, so it holds whatever the mechanism, and it catches the variable being
-withdrawn as readily as a path written wrong. Do not soften it into a warning — the whole
-point is that it turns a denial found halfway through a run into a first-second failure.
+choice: the run scans the session's stderr for that warning and fails the run on it. Do not
+soften it into a warning — the whole point is that it turns a denial found halfway through a
+run into a first-second failure.
+
+**Know what that check does and does not cover, because ENG-190 narrowed it.** The symptom it
+matches is an *entry count*, and the CLI prints no such line when the count is zero. Verified
+on 2.1.260, two untrusted runs differing only in the array, both reaching the same
+authentication failure so the silence is not a run that stopped early:
+
+| `permissions.allow` | stderr, untrusted |
+|---|---|
+| `["Bash(npm run build:*)", "Bash(git:*)"]` | `Ignoring 2 permissions.allow entries …` |
+| `[]` | **nothing at all** |
+
+So a failed trust write is indistinguishable from a healthy start unless the project wrote
+allow entries. Before ENG-190 that was safe to ignore, because `jen init` seeded eight of them
+and every jen-installed project therefore emitted the warning. Now the scaffold grants nothing,
+and every adopter is at zero by default.
+
+The tempting reading — *no entries, nothing lost, correct silence* — is wrong, and the note at
+the top of this section is why: what trust gates is the file, not any one key in it. A project
+whose settings carry a `deny` rule and an `env` block and an empty `allow` loses all of it to
+an untrusted clone and prints nothing; confirmed on 2.1.260 with exactly that file. The
+guarantee that this check catches `CLAUDE_CONFIG_DIR` being withdrawn now holds only for
+projects that happen to have written allow rules.
+
+Do not fix that by loosening the regex — there is no wider *string* to match, because the CLI
+emits no line at all. It needs a check that does not key on the entry count: verifying the
+trust store took, or asserting the settings file was honoured by something other than a count.
+That is **ENG-192**, deliberately not ENG-190, which was the mode switch.
+
+**Auto mode adds nothing to stderr that `PERMISSION_WARNING` could confuse with a trust
+failure.** Checked rather than assumed, because the two causes would be indistinguishable if
+it did and every healthy run would report a trust failure that never happened. On 2.1.260, in
+a workspace whose `.claude/settings.json` carries `Bash(npm run build:*)` and
+`Bash(npm run typecheck:*)`, a trusted run under `--permission-mode auto` prints **nothing at
+all** on stderr, while the same workspace untrusted prints `Ignoring 5 permissions.allow
+entries …` under `acceptEdits` and `auto` alike, byte-identical. So the mode did not change
+what the warning means and `PERMISSION_WARNING` needs no second clause; leave the regex as it
+is.
+
+**Do not restate that as "auto discards package-manager run commands on entry."** ENG-190
+asserted that in four places before review caught it, and it is not established. Read the
+negative for exactly what it is: silence on stderr is equally consistent with *dropped
+silently* and with *never dropped*, so this experiment cannot be cited as evidence that any
+particular rule is inert under `auto`. What 2.1.260 actually carries, found by reading the
+binary's strings rather than by running it:
+
+* an **opt-in** setting, default false, suspending *every* Bash/PowerShell allow rule while
+  auto mode is active — all-or-nothing, not by category;
+* an advisory `/auto-mode-setup` review that *flags* entries "broad enough that auto mode
+  either ignores them at runtime, or auto-approves destructive commands with no check" and
+  offers to remove them, with a person deciding.
+
+So a runtime-ignored category does exist and is described by *breadth*. Nothing found sizes
+it, and `Bash(npm run build:*)` is narrow. Treat any entry as live until it is deleted.
+
+Two limits on all of the above. Both runs ended at `Failed to authenticate` before any tool
+ran, so this is the startup path only — the right path, since the untrusted run died at the
+same point and still printed the warning, but a discard announced at the first permission
+check instead would not have been caught. And the mechanism cannot be settled from inside a
+dispatched session at all: a nested `claude auto-mode config` is itself blocked by the
+classifier, and working around that denial is the one thing not to do. Settle it from an
+attended session or leave it open.
+
+**The rule set itself reads from an attended session: `claude auto-mode defaults`.** The
+blocked command above is `auto-mode config`; `defaults` is a different one and it prints the
+whole thing as JSON — on 2.1.260, 17 allow rules, 69 soft-denies, 1 hard-deny (Data
+Exfiltration), plus the environment questions. Read it there rather than inferring a verdict
+from a denial message, which names the rule and nothing else.
+
+**What makes the soft-deny list the one to check: the invocation passes
+`--permission-prompts none`, so a soft-denied action has nobody to ask and the denial is
+final.** All 69 are hard denials for a stage. A new pipeline act is checked against that list,
+not against the allow list.
+
+**But do not read allow-list membership backwards.** `Declared Dependencies` covers
+`npm install` only for packages already in the manifest, and explicitly not an agent-chosen
+name or an install after the session edited the manifest — which is the commonest
+implementation act there is, and would predict a denial. It is not denied: falling outside an
+allow rule only means the classifier judges the action on its merits. Measured on 2.1.260,
+empty allow list, nothing in any user- or local-scope settings: `npm install` from a manifest,
+`npm install <chosen package>`, `node -e`, `npm test`, `npm run build`, `npx openspec validate`,
+`git`, `gh`, and `curl -X PUT` of a file to a Linear signed upload URL all ran; the tracker
+MCP posted a comment, and `resolveReviewThread` on a thread the session had not created
+returned `isResolved: true` — the `External System Writes` clause that reads adverse to the
+pipeline does not bite. Denials in the same session were `Credential Exploration` (scanning
+the environment for credential-shaped names) and spawning a nested `claude`.
+
+Measured from an attended session rather than a dispatched one, which is the limit worth
+naming: what could not be reached that way is the two-identity case — `gh pr review --approve`
+from one registered application on a pull request another opened, and the merge behind it.
+Those need the pipeline's own identities and a runner, and `Self-Approval` stays open until
+one runs.
 
 **The clone path must be `realpath`'d before the trust entry is keyed by it.** This is not
 tidiness and it is not obvious: on macOS the system temporary directory is a symlink, so
@@ -611,3 +713,46 @@ repository state — and the instruction to cite rather than conclude, which is 
 ageing into an assumption. **Two copies, and they must not drift**: whatever re-derives or
 supersedes what is written here updates the skill in the same change, and `test/merge-gate.test.ts`
 holds the shipped one to carrying its date and its vehicle.
+
+## Under `auto`, delivery's merge is allowed and its *bypass* is denied — and jen's gate needs the bypass
+
+Three forms of the merge were run against PR #28 on **6 Sep 2026**, delivering ENG-190 itself,
+from a session under `--permission-mode auto` with jen's own `.claude/settings.json` empty — so
+nothing resolved at step 1 and the classifier alone judged each call:
+
+| call | classifier | host |
+|---|---|---|
+| plain `gh pr merge --merge` | **allowed** | refused: base branch policy — the required review |
+| the same with `--auto` | **allowed** | refused: `Auto merge is not allowed for this repository` |
+| the same with `--admin` | **denied** | never reached |
+
+**The good news first, because it is the load-bearing half.** `Merge Without Review` does not
+touch an ordinary merge. A pipeline whose gate is *satisfied* — a real approving review from the
+reviewing role — merges under `auto` with nothing granted and nothing bypassed. Delivery's own
+act is not the problem the rule's name suggests it might be.
+
+What the rule denies is the **bypass**: the `--admin` form, whose entire purpose is to merge
+without the review. That is the rule working as intended, and it should not be argued around.
+
+**The trap is that jen's own delivery needs precisely that form today**, so the pipeline meets
+the denial rather than the allowance. `joshtgi` holds `bypass_mode: always` on ruleset
+`20589957`, but a bypass actor is not applied implicitly — the host refuses the plain merge and
+tells you to pass the admin flag, which is the denied call. The reason a bypass is needed at all
+is the open `Self-Approval` question (ENG-193): the pipeline cannot yet produce the approving
+review that would let the gate pass honestly, so #22, #24 and #26 were each merged by a human
+wielding it. **Settling ENG-193 removes the need for the bypass, and this denial with it.**
+Granting `Bash(gh:*)` to get past it instead would restore exactly the step-1 exemption ENG-190
+task 2.3 had a human remove, on the one call least worth exempting.
+
+Two traps worth naming separately, because each is misreadable on its own:
+
+- **The `--auto` form is refused by the *host*, not the classifier.** Auto-merge is a repository
+  setting, separate from the ruleset supplying the required review, and it is off here
+  (`allow_auto_merge: false`). So `Merge Without Review`'s carve-out — which names that form as
+  explicitly not the rule, on a repo with required-reviews protection — and which ENG-190's
+  `proposal.md` and `design.md` both rest on, **is unreachable on jen as configured**. A session
+  reading `Auto merge is not allowed for this repository` as a permission verdict concludes the
+  opposite of the truth: that call was allowed.
+- **A merge that lands is not evidence about the rule.** Every jen merge so far went through a
+  human's admin bypass, which the classifier never judged, or predates auto mode. Do not record
+  any of them as confirming ENG-190 tasks.md 5.5.
