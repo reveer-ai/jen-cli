@@ -258,12 +258,25 @@ prompt someone answered.
   a repo with required-reviews branch protection is NOT this rule" — which is evidence for the
   expectation and not the confirmation the task asks for. Still open; falls to delivery or to a
   human.
-- [ ] 5.6 If 5.4 or 5.5 is denied, do not fix it here. Record the classifier's reason and
+- [x] 5.6 If 5.4 or 5.5 is denied, do not fix it here. Record the classifier's reason and
   open a task for it. The fix depends on the answer, and this change's job was to obtain the
   answer.
 
-  **Nothing to record yet** — neither was reached, so there is no classifier reason to carry
-  and no task to open. This stays open behind 5.4 and 5.5 rather than being closed empty.
+  **Opened as ENG-193, on a condition adjacent to the one written here.** Neither call was
+  denied — neither was reached — so there is no classifier reason to carry, and that absence
+  is the whole content of the handoff. The task says so plainly rather than implying a verdict
+  was obtained, and it carries what a later run needs: the rule text, why an attended session
+  cannot reach it, and the instruction to capture the classifier's reason verbatim if it does
+  fire.
+
+  5.5 is deliberately not carried with it. The carve-out is verbatim in the rule and the first
+  `deliver-task` merge exercises it, so a task would be answered before anyone picked it up.
+
+**The user closed group 5 out on this evidence.** 5.1–5.3 hold; 5.4 and 5.5 stay unchecked
+because they were not verified, and marking them otherwise would be a false record. The
+decision was to accept that and let the `Self-Approval` question ride to ENG-193 — where it
+had been scoped from the start — rather than hold delivery for a runner. 5.6 records the
+consequence, and nothing about the change waits on either answer.
 
 ## 6. Ship
 
