@@ -58,7 +58,7 @@ resources:
   # at `cli/` rather than `src/`, because jen is the tool, not an installation of it.
   - name: jen
     kind: repository
-    url: git@github.com:reveer-ai/jen.git
+    url: git@github.com:reveer-ai/jen-cli.git
     path: cli/
 
   - name: jen-tracker
