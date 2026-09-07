@@ -33,7 +33,7 @@ do not name themselves. Listed in the order they must be created.
 | **GitHub App** | Contents: write and Pull requests: write, installed on this repository only. Id in the `APP_ID` variable, key in the `APP_PRIVATE_KEY` secret. | The `version` job fails to authenticate and **no Version PR appears at all**. Nothing publishes, and nothing explains why. |
 | **`release` environment** | Deployment branches restricted to `main`, no required reviewers. | The publish fails at the OIDC exchange. npm reports a 404 naming the package, because the claim it was matching is missing. |
 | **The package exists on npm** | `@reveer/jen@0.0.0` published by hand, then `npm deprecate`d. | The trusted-publisher form cannot be reached — it is per-package and only exists for a package that exists. This is why the pipeline does not publish the first version. |
-| **Trusted publisher entry** | On the package's settings page: owner `reveer-ai`, repo `jen`, workflow filename `release.yml`, environment `release`, allowed action `npm publish` (not `npm stage publish`). | The publish fails as a 404 naming the package. |
+| **Trusted publisher entry** | On the package's settings page: owner `reveer-ai`, repo `jen-cli`, workflow filename `release.yml`, environment `release`, allowed action `npm publish` (not `npm stage publish`). | The publish fails as a 404 naming the package. |
 | **Required status check on `main`** | Naming the CI job. | Nothing fails. Releases keep shipping, ungated, and the gap is silent — which is the reason it is on this list. |
 
 *"Allow GitHub Actions to create and approve pull requests" is deliberately **off**.* The

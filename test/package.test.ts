@@ -45,7 +45,7 @@ describe('package.json', () => {
   // form does not match. A cleanup that "normalizes" this back breaks the release with a
   // 404 that reads as though the package does not exist.
   it('names its source repository in the form the OIDC exchange matches', () => {
-    expect(manifest.repository.url).toBe('https://github.com/reveer-ai/jen.git');
+    expect(manifest.repository.url).toBe('https://github.com/reveer-ai/jen-cli.git');
     expect(manifest.repository.url.startsWith('git+')).toBe(false);
   });
 
