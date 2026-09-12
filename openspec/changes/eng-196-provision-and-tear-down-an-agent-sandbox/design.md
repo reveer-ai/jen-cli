@@ -72,21 +72,22 @@ The buffered alternative — resolve when the process ends, with its output coll
 
 Building the buffered form now would therefore be building something known to need replacing, and the replacement would land underneath a consumer already written against it. Tests wanting collected output can accumulate a stream in a line or two; a consumer wanting a stream cannot recover one from a buffer.
 
-### Secrets arrive by environment passthrough, never as a command-line value
+### Secrets arrive on a process's stdin, never as a command line or as container configuration
 
-`docker` accepts `-e NAME` with no `=value`, which forwards the value from the `docker` process's own environment. So:
+The obvious spellings violate the spec outright. `-e NAME=value` puts the secret in `docker`'s argv, which is readable by every process on the host for the life of the call. `--env-file` puts it on disk, which the spec forbids and which reintroduces exactly the cleanup-that-can-be-interrupted problem that delivering secrets as environment exists to remove.
+
+This design's first answer was the third spelling — `-e NAME` with no `=value`, which forwards the value from the `docker` process's own environment — and it was recorded as unverified, because no daemon was running on the machine this was designed on.
+
+**Verified at implementation, and it does not hold.** The passthrough works exactly as documented and the secret does stay out of argv. But the runtime resolves what it is handed into the container's own configuration, where `docker inspect --format '{{json .Config.Env}}'` returns it in full for as long as the container exists. The requirement is that no file inside *or outside* the sandbox holds the secret, and a record the runtime keeps past the call is what that forbids. Writing no file oneself is not the same as no file existing.
+
+So the recorded fallback applies — pipe the env block over stdin — with one correction found the same way. The fallback as written delivered to the **entrypoint**, and that cannot work: a process started by `docker exec` takes its environment from the container's configuration rather than from the process already running inside it, so an entrypoint that exported the block would be the only thing that ever saw it. Delivery is therefore **per process**, at the moment one starts:
 
 ```ts
-spawn('docker', ['run', '-e', 'ANTHROPIC_API_KEY', ...], {
-  env: { ...minimal, ANTHROPIC_API_KEY: resolved },
-});
+spawn('docker', ['exec', '-i', name, 'sh', '-c', DELIVER, 'sh', ...command]);
+// DELIVER reads NAME=value lines until an empty one, exports them, and execs "$@".
 ```
 
-The secret is in the child `docker` process's environment and in the container. It is in no command line and no file.
-
-This is the one mechanism in this task that the spec's credential requirement depends on, and it matters because the obvious spellings both violate it. `-e NAME=value` puts the secret in `docker`'s argv, which is readable by every process on the host for the life of the call. `--env-file` puts it on disk, which the spec forbids outright and which reintroduces exactly the cleanup-that-can-be-interrupted problem that delivering secrets as environment exists to remove.
-
-**To verify at implementation.** The bare `-e NAME` passthrough is documented Docker behaviour but `docker run --help` does not state it, and it could not be exercised here — no daemon was running on the machine this was designed on. Confirm it before building on it. If it does not hold, the fallback is to pipe an env block to the container's stdin and have the entrypoint read it, which is uglier but keeps both prohibitions.
+Creation still resolves the references, so a credential that cannot be resolved fails the creation it belongs to and unwinds with it; what moved is only when the value is handed over. The secret is then in a pipe and in one process's memory — in no argv, no file, and nothing the runtime writes down. The cost is a line protocol: a value carrying a newline cannot be delivered, and creation refuses one rather than truncating it.
 
 ### Destruction is explicit, not `--rm`
 
@@ -140,7 +141,7 @@ npx vitest run --config agent/vitest.config.ts
 
 **[One driver means nothing independently exercises the interface] → the interface requirement, checked by reading.** Accepted deliberately, with the reasoning in the proposal. The residual risk is *semantic* rather than nominal: an assumption about ordering, synchronicity, or stream behaviour can be true-by-accident under Docker and invisible until something else goes behind the interface. Nothing here catches that. The compensating move is to keep the interface small enough to re-read in full when a second driver is written.
 
-**[The `-e NAME` passthrough is unverified] → verify first, fallback recorded.** Above. It could not be tested without a daemon.
+**[The `-e NAME` passthrough was unverified, and failed verification] → the fallback, applied per process.** Above. It kept the secret out of argv and put it in the container's configuration, which the spec forbids as surely as a file; credentials are delivered over each process's stdin instead.
 
 **[Parsing `docker` CLI output is more brittle than a client library] → ask for machine-readable output and parse narrowly.** Prefer `--format` with an explicit template and exit codes over scraping human text, and keep parsing to the few values actually needed. The dependency-free win is worth this; a library would mean the substrate gains a manifest, which the proposal rules out.
 

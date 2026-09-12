@@ -242,15 +242,21 @@ describe('credentials reach the sandbox and nothing else', () => {
     await subject.releaseWorkspace(agent.id);
   });
 
-  it('puts the secret on no command line', async () => {
+  it('puts the secret on no command line, and passes the runtime no environment at all', async () => {
     // Recorded off the real spawner rather than a stub, because the requirement is about
     // the argv that was actually passed. `--env NAME=value` is the spelling this exists to
     // keep out: it would pass every behavioural test above and disclose the secret to every
     // process on the machine for the life of the call.
+    //
+    // `--env NAME` is now forbidden here too, and that is the correction this test carries.
+    // It does keep the secret out of argv, and it fails the requirement anyway, because the
+    // runtime writes what it is told into the container's own record — see the test below.
+    // So the assertion is no longer "the safe spelling was used" but "no environment was
+    // handed over at all", which is the only form of it a later change cannot creep past.
     const argvs: string[][] = [];
-    const recording: Spawner = (command, args, env) => {
+    const recording: Spawner = (command, args, env, input) => {
       argvs.push([command, ...args]);
-      return spawner(command, args, env);
+      return spawner(command, args, env, input);
     };
 
     const agent = record({ credentials: [{ name: 'AGENT_TOKEN', ref: 'env:JEN_TEST_TOKEN' }] });
@@ -261,15 +267,86 @@ describe('credentials reach the sandbox and nothing else', () => {
     });
     const sandbox = await subject.create(agent);
 
+    // Exercised, not merely created: the argv that delivers the credential is the one this
+    // is really about, and it only exists once a process has been started.
+    expect(await inside(sandbox, ['sh', '-c', 'printf %s "$AGENT_TOKEN"'])).toMatchObject({ out: SECRET, code: 0 });
+
     const creation = argvs.find((argv) => argv.includes('run'));
     expect(creation).toBeDefined();
-    expect(creation).toContain('--env');
-    expect(creation).toContain('AGENT_TOKEN');
+    expect(creation?.some((argument) => argument === '--env' || argument === '-e')).toBe(false);
+    expect(creation).not.toContain('AGENT_TOKEN');
+
     expect(argvs.flat().join('\n')).not.toContain(SECRET);
-    expect(argvs.flat().some((argument) => argument.startsWith('--env-file'))).toBe(false);
+    expect(argvs.flat().some((argument) => argument.startsWith('--env'))).toBe(false);
 
     await sandbox.destroy();
     await subject.releaseWorkspace(agent.id);
+  });
+
+  it('puts the secret in no record the runtime keeps', async () => {
+    // The regression this change exists for. The previous delivery kept the secret out of
+    // every argv and the runtime resolved it into the container's configuration anyway,
+    // where `inspect` returned it in full for as long as the container lived. A source-level
+    // check for file writes cannot see that, because the write is the runtime's and not
+    // this driver's — so the assertion has to be made against the runtime's own record.
+    const agent = record({ credentials: [{ name: 'AGENT_TOKEN', ref: 'env:JEN_TEST_TOKEN' }] });
+    const subject = driver({
+      env: { ...process.env, JEN_TEST_TOKEN: SECRET },
+      resolve: resolveFromEnvironment({ ...process.env, JEN_TEST_TOKEN: SECRET }),
+    });
+    const sandbox = await subject.create(agent);
+    const name = (await lines('ps', '--filter', `label=jen.agent=${agent.id}`, '--format', '{{.Names}}'))[0] ?? '';
+
+    const configured = JSON.parse((await ask('inspect', '--format', '{{json .Config.Env}}', name)).out) as string[];
+    expect(configured.some((entry) => entry.startsWith('AGENT_TOKEN'))).toBe(false);
+    expect((await ask('inspect', name)).out).not.toContain(SECRET);
+
+    // Nor is it in the environment of the process the sandbox idles on, which is the other
+    // thing the old delivery put it in and which anything running here could have read.
+    const idle = await inside(sandbox, ['sh', '-c', "tr '\\0' '\\n' < /proc/1/environ"]);
+    expect(idle.out).not.toContain(SECRET);
+
+    // And none of that changes once a process has actually been given the credential.
+    expect(await inside(sandbox, ['sh', '-c', 'printf %s "$AGENT_TOKEN"'])).toMatchObject({ out: SECRET, code: 0 });
+    expect((await ask('inspect', name)).out).not.toContain(SECRET);
+
+    await sandbox.destroy();
+    await subject.releaseWorkspace(agent.id);
+  });
+
+  it('delivers a value the line protocol has to carry carefully, and refuses one it cannot', async () => {
+    // Delivery is a line of text read by a shell, so the two things that could go wrong are
+    // a value that needs quoting arriving mangled, and a value carrying a newline arriving
+    // truncated. The first is tested because it must work; the second is refused, because a
+    // half-delivered secret arrives looking like a secret.
+    const awkward = `${SECRET} with spaces\t$NOT_EXPANDED "quoted" 'single' \\backslash`;
+    const agent = record({ credentials: [{ name: 'AGENT_TOKEN', ref: 'env:JEN_TEST_TOKEN' }] });
+    const subject = driver({
+      env: { ...process.env, JEN_TEST_TOKEN: awkward },
+      resolve: resolveFromEnvironment({ ...process.env, JEN_TEST_TOKEN: awkward }),
+    });
+    const sandbox = await subject.create(agent);
+
+    expect(await inside(sandbox, ['sh', '-c', 'printf %s "$AGENT_TOKEN"'])).toMatchObject({ out: awkward, code: 0 });
+
+    await sandbox.destroy();
+    await subject.releaseWorkspace(agent.id);
+
+    const multiline = `first-line\n${SECRET}`;
+    const refusing = driver({
+      env: { ...process.env, JEN_TEST_TOKEN: multiline },
+      resolve: resolveFromEnvironment({ ...process.env, JEN_TEST_TOKEN: multiline }),
+    });
+    const second = record({ credentials: [{ name: 'AGENT_TOKEN', ref: 'env:JEN_TEST_TOKEN' }] });
+
+    const failure = await refusing.create(second).catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(SandboxError);
+    expect((failure as SandboxError).message).toContain('AGENT_TOKEN');
+    expect((failure as SandboxError).message).not.toContain(SECRET);
+
+    // And it fails the creation rather than the process, so nothing is left provisioned.
+    expect(await lines('ps', '-a', '--filter', `label=jen.agent=${second.id}`, '--format', '{{.Names}}')).toEqual([]);
+    expect(await lines('volume', 'ls', '--filter', `label=jen.agent=${second.id}`, '--format', '{{.Name}}')).toEqual([]);
   });
 
   it('writes no file at all, which is what keeps the secret off disk', () => {

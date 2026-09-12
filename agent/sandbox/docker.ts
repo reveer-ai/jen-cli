@@ -15,6 +15,13 @@
  * the absence at the source level, because a write added later would be invisible to any
  * behavioural test that did not happen to look for it.
  *
+ * **Writing no file of its own is not enough, though, and that is the subtlety to hold on
+ * to: the runtime writes files too.** Anything handed to it as container configuration —
+ * `--env` in either spelling included — it keeps in the container's own record for as long
+ * as the container exists, where `inspect` reads it back in full. So creation hands it no
+ * environment at all, and credentials reach each process over that process's standard
+ * input. See {@link DELIVER}.
+ *
  * Podman speaks the same command-line surface and is expected to work unchanged, but
  * nothing here is tested against it.
  */
@@ -46,6 +53,32 @@ const AGENT_LABEL = 'jen.agent';
  */
 const IDLE = ['sh', '-c', 'while :; do sleep 3600; done'];
 
+/**
+ * How a credential reaches a process: read from standard input, exported, and gone.
+ *
+ * This is the mechanism the design recorded as its fallback, and it is the one in use. The
+ * primary — `--env NAME` with no `=value`, which forwards the value from the `docker`
+ * process's own environment — does work, and it satisfies only half of what it was for. The
+ * secret stays out of argv; the runtime then resolves it into the container's configuration,
+ * where it can be read back in full for as long as the container exists. The requirement is
+ * that no file inside or outside the sandbox holds the secret, and a record the runtime
+ * keeps past the call is what that forbids.
+ *
+ * The fallback had to move as well. As recorded it delivered to the *entrypoint*, and that
+ * cannot work: a process started by `exec` takes its environment from the container's
+ * configuration rather than from the process already running inside, so an entrypoint that
+ * exported the credentials would be the only thing that ever saw them. Delivery is therefore
+ * per process, at the moment one starts. Creation still resolves the references, which is
+ * what keeps an unresolvable credential a creation failure rather than a surprise later.
+ *
+ * The block is one `NAME=value` per line, ended by an empty line — so a value may not
+ * contain a newline, and {@link DockerSandboxDriver.create} refuses one that does rather
+ * than delivering a truncated secret. `sh` is all this asks of an image, which is what a
+ * sandbox already idles on, and `$0` is a throwaway so `"$@"` is the caller's command
+ * exactly.
+ */
+const DELIVER = 'while IFS= read -r line; do [ -z "$line" ] && break; export "$line"; done; exec "$@"';
+
 /** A started subprocess: its output as it is produced, and its ending. */
 export interface Started {
   stdout: Readable;
@@ -59,12 +92,21 @@ export interface Started {
  * A seam rather than a mock: tests wrap the real spawner to record the argv that was
  * actually passed, which is the only way to hold the credential requirement — that a
  * secret reaches no command line — against the command line that really ran.
+ *
+ * `input` is written to the subprocess's standard input, which is then closed. It has one
+ * caller — credential delivery — and it is why that delivery leaves no trace anywhere else
+ * in this module: a secret sent this way is in a pipe and in the receiving process's
+ * memory, and in no argument, no file, and no record the runtime keeps.
  */
-export type Spawner = (command: string, args: string[], env: NodeJS.ProcessEnv) => Started;
+export type Spawner = (command: string, args: string[], env: NodeJS.ProcessEnv, input?: string) => Started;
 
 /** The default spawner, over `node:child_process`. */
-export const spawner: Spawner = (command, args, env) => {
-  const child = spawn(command, args, { env, stdio: ['ignore', 'pipe', 'pipe'] });
+export const spawner: Spawner = (command, args, env, input) => {
+  // Standard input is a pipe only when there is something to send. Left open on the many
+  // calls that send nothing it would be a descriptor per call, and descriptors are one of
+  // the things a create/destroy cycle is required not to accumulate.
+  const child = spawn(command, args, { env, stdio: [input === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'] });
+  child.stdin?.end(input);
   const exit = new Promise<Exit>((resolve, reject) => {
     child.on('error', reject);
     child.on('close', (code, signal) => resolve({ code, signal }));
@@ -138,12 +180,12 @@ export class DockerSandboxDriver implements SandboxDriver {
     const workspace = workspaceName(record.id);
     const name = `${SANDBOX_PREFIX}-${slug(record.id)}-${randomBytes(4).toString('hex')}`;
     let mine = false;
+    let credentials = '';
 
     try {
       mine = await this.#ensureWorkspace(workspace, record.id);
+      credentials = await this.#deliverable(record.credentials);
 
-      // The secrets live in the environment of the `docker` child and nowhere else.
-      const env: NodeJS.ProcessEnv = { ...this.#env };
       const args = [
         'run',
         '--detach',
@@ -163,26 +205,51 @@ export class DockerSandboxDriver implements SandboxDriver {
         record.workspace,
       ];
 
-      for (const credential of record.credentials) {
-        env[credential.name] = await this.#resolve(credential);
-        // `--env NAME` with no `=value` forwards the value from this process's own
-        // environment. Both obvious alternatives violate the credential requirement:
-        // `--env NAME=value` puts the secret in argv, readable by every process on the
-        // machine for the life of the call, and `--env-file` puts it on disk.
-        args.push('--env', credential.name);
-      }
-
-      // No network flag: the sandbox takes the runtime's default, which is unrestricted and
-      // is no code at all. There is no policy to configure, so there is nothing to pass.
+      // Nothing of the credentials is passed here — not in an argument, and not in the
+      // environment this child is given. What the runtime is told at creation it writes
+      // down, so it is told nothing; delivery is DELIVER, per process.
+      //
+      // No network flag either: the sandbox takes the runtime's default, which is
+      // unrestricted and is no code at all. There is no policy to configure.
       args.push(record.environment, ...IDLE);
 
-      await this.#must(args, `creating a sandbox for ${record.id}`, env);
+      await this.#must(args, `creating a sandbox for ${record.id}`);
     } catch (error) {
       await this.#unwind(name, mine ? workspace : undefined);
       throw error;
     }
 
-    return this.#sandbox(name, record.workspace);
+    return this.#sandbox(name, record.workspace, credentials);
+  }
+
+  /**
+   * Resolve every reference into the block a process is sent as it starts.
+   *
+   * Resolution happens at creation so that a credential that cannot be resolved fails the
+   * creation it belongs to, and unwinds with it, rather than surfacing later as a process
+   * mysteriously missing a variable.
+   *
+   * The two refusals are the line protocol's, and they are refusals rather than escapes on
+   * purpose: a truncated secret is worse than a failed creation, because it arrives looking
+   * like a secret. Both name the credential and never the value — an error message is the
+   * one place a secret escapes to a log without anybody meaning it to.
+   */
+  async #deliverable(credentials: readonly CredentialReference[]): Promise<string> {
+    let block = '';
+    for (const credential of credentials) {
+      if (credential.name === '' || /[\n\r=]/.test(credential.name)) {
+        throw new SandboxError(`the credential \`${credential.name}\` is not a usable variable name.`);
+      }
+      const value = await this.#resolve(credential);
+      if (/[\n\r]/.test(value)) {
+        throw new SandboxError(
+          `the credential \`${credential.name}\` resolves to a value containing a newline, which cannot be delivered.`,
+        );
+      }
+      block += `${credential.name}=${value}\n`;
+    }
+    // The empty line is what tells the receiving shell the block has ended.
+    return `${block}\n`;
   }
 
   /** Ends the agent, not a period of its activity. Succeeds when there is nothing left. */
@@ -200,10 +267,20 @@ export class DockerSandboxDriver implements SandboxDriver {
    * because a separate class could not reach them and would need them made public — which
    * would put the sandbox's name, a container concept, onto something a caller can see.
    */
-  #sandbox(name: string, workspace: string): Sandbox {
+  #sandbox(name: string, workspace: string, credentials: string): Sandbox {
     return {
+      /**
+       * Every process starts through DELIVER, whether or not this agent has a credential —
+       * one path, so the path that carries them is the one every test here exercises.
+       * `--interactive` is what keeps standard input attached long enough for the block to
+       * arrive; it is closed straight after, which the command sees as the end of its own
+       * input.
+       */
       exec: async (command, options) =>
-        this.#start(['exec', '--workdir', options?.cwd ?? workspace, name, ...command]),
+        this.#start(
+          ['exec', '--interactive', '--workdir', options?.cwd ?? workspace, name, 'sh', '-c', DELIVER, 'sh', ...command],
+          credentials,
+        ),
 
       /**
        * Explicit removal, rather than `--rm` at creation.
@@ -256,15 +333,15 @@ export class DockerSandboxDriver implements SandboxDriver {
 
   async #quietly(args: string[]): Promise<void> {
     try {
-      await this.#collect(args, this.#env);
+      await this.#collect(args);
     } catch {
       // The failure that sent us here is the one the caller needs to see.
     }
   }
 
   /** Start a subprocess, reporting a runtime that cannot be run at all as such. */
-  #start(args: string[]): Process {
-    const started = this.#spawn(this.#docker, args, this.#env);
+  #start(args: string[], input?: string): Process {
+    const started = this.#spawn(this.#docker, args, this.#env, input);
     const exit = started.exit.catch((error: unknown) => {
       throw this.#unreachable(error);
     });
@@ -273,8 +350,8 @@ export class DockerSandboxDriver implements SandboxDriver {
     return { stdout: started.stdout, stderr: started.stderr, exit };
   }
 
-  async #collect(args: string[], env: NodeJS.ProcessEnv): Promise<Completed> {
-    const started = this.#spawn(this.#docker, args, env);
+  async #collect(args: string[]): Promise<Completed> {
+    const started = this.#spawn(this.#docker, args, this.#env);
     let stdout = '';
     let stderr = '';
     started.stdout.setEncoding('utf8').on('data', (chunk: string) => (stdout += chunk));
@@ -287,8 +364,8 @@ export class DockerSandboxDriver implements SandboxDriver {
   }
 
   /** Run to completion, and turn a non-zero exit into an error naming what failed. */
-  async #must(args: string[], what: string, env: NodeJS.ProcessEnv = this.#env): Promise<Completed> {
-    const done = await this.#collect(args, env);
+  async #must(args: string[], what: string): Promise<Completed> {
+    const done = await this.#collect(args);
     if (done.code === 0) return done;
     const how = done.signal ?? `exit ${done.code}`;
     throw new SandboxError(`${what} failed (${how}): ${done.stderr.trim().slice(0, 500)}`);

@@ -2,6 +2,7 @@
 
 - [x] 1.1 Start the container runtime's daemon and confirm it is reachable. The machine this change was designed on had it installed but not running, so no step below has been exercised against a live daemon.
 - [x] 1.2 Confirm that `docker run -e NAME` with no `=value` forwards the value from the `docker` process's own environment into the container. Verify by running a container that echoes the variable, with the value present only in the spawned process's environment. If this does not hold, stop and apply `design.md`'s fallback — piping an env block to the container's stdin — before writing the driver, because the credential requirement depends on it and both obvious alternatives violate the spec.
+  - **Outcome: the passthrough forwards the value, and is unusable anyway.** The runtime resolves it into the container's configuration, where `docker inspect --format '{{json .Config.Env}}'` returns it in full for the container's lifetime — a file outside the sandbox holding the secret, which the spec forbids. The fallback applies, and it had to move: `docker exec` builds a process's environment from the container's configuration and not from PID 1, so an entrypoint that read the block would be the only thing that ever saw it. Delivery is per process. See 4.3.
 
 ## 2. Stand up `agent/`
 
@@ -21,7 +22,7 @@
 
 - [x] 4.1 Write `agent/sandbox/docker.ts`, reaching the runtime by running the `docker` CLI as a subprocess. No client library, and no dependency added to the repository's manifest.
 - [x] 4.2 Implement `create`: ensure the agent's workspace volume, then start a container from the record's image with a trivial idle entrypoint, the volume mounted at the workspace path, and `jen.run` / `jen.agent` labels applied.
-- [x] 4.3 Deliver credentials by resolving each reference and passing `-e NAME` with the value present only in the spawned `docker` process's environment. Never `-e NAME=value`, which puts the secret in argv where every process on the host can read it, and never `--env-file`, which puts it on disk.
+- [x] 4.3 Deliver credentials by resolving each reference at creation and sending it to each process as it starts, over that process's own stdin: `docker exec -i … sh -c DELIVER sh <command>`, where `DELIVER` reads `NAME=value` lines until an empty one, exports them and `exec`s the command. Creation passes the runtime no environment at all. Never `-e NAME=value`, which puts the secret in argv where every process on the host can read it; never `--env-file`, which puts it on disk; and never bare `-e NAME`, which keeps it out of argv and puts it in the container's configuration instead — see 1.2. A value containing a newline cannot ride a line protocol, so creation refuses one, naming the credential and never the value.
 - [x] 4.4 Mount no host directory, and never the runtime's socket.
 - [x] 4.5 Implement `exec` over `docker exec`, returning the streaming handle from 3.2.
 - [x] 4.6 Implement `destroy` as an explicit `docker rm -f`, not by passing `--rm` at creation, so destruction is this code's decision and is observable in a test.
@@ -40,7 +41,7 @@ Everything below is written alongside the code it covers. Nothing automated will
 - [x] 5.3 `releaseWorkspace` reclaims the volume.
 - [x] 5.4 Two sandboxes live at once cannot read each other's workspace, and neither can read the host's filesystem.
 - [x] 5.5 No host directory is mounted, and the runtime's socket is not present inside a sandbox.
-- [x] 5.6 A resolved credential is present in the sandbox's environment, and appears in no command line assembled by creation and no file written by it. Assert against the argv actually passed, so `-e NAME=value` cannot creep back in unnoticed.
+- [x] 5.6 A resolved credential is present in the sandbox's environment, and appears in no command line assembled by creation and no file written by it. Assert against the argv actually passed, so `-e NAME=value` cannot creep back in unnoticed — and against `docker inspect`, so no spelling that hands the runtime an environment can either. A value needing quoting survives delivery intact; one carrying a newline is refused at creation.
 - [x] 5.7 After destruction, the credential is not readable anywhere the sandbox left behind.
 - [x] 5.8 Cycling create/destroy enough times to surface a per-cycle leak — a few dozen — accumulates no containers, volumes, processes, or file descriptors. Assert against counts taken before and after, not against a fixed expected number.
 - [x] 5.9 Creation that fails partway reports the failure and leaves nothing it created behind, including the case where the volume pre-existed and must survive.

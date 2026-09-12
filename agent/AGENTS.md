@@ -38,25 +38,43 @@ only job is to drive another program proves nothing against a stub of that progr
   run is killed mid-way, `docker ps -a --filter label=jen.run` and
   `docker volume ls --filter label=jen.run` find what it left.
 
-## What the environment passthrough actually does
+## How a credential gets in, and the three ways that look right and are not
 
-The credential requirement — no secret on a command line, none on disk — rests entirely on
-one documented but easily-missed behaviour, and it is verified:
-
-**`docker run --env NAME` with no `=value` forwards the value from the `docker` process's
-own environment.** Both short and long spellings work. The secret is then in the child's
-environment and in the sandbox, and in no argv and no file.
-
-Both obvious alternatives violate the requirement, so neither is a fallback:
+The requirement is that no secret reaches a command line or a file, inside the sandbox or
+outside it. **Three spellings satisfy part of that and fail it overall.** All three are
+easy to reach for, so each is written down here with what is wrong with it:
 
 - `--env NAME=value` puts the secret in `docker`'s argv, which every process on the machine
   can read for the life of the call.
 - `--env-file` puts it on disk, which is what delivering secrets as environment exists to
   avoid — it reintroduces a cleanup step that can be interrupted.
+- **`--env NAME` with no `=value`** forwards the value from the `docker` process's own
+  environment, and it does keep the secret out of argv. It fails anyway, and this is the
+  one worth understanding, because nothing about the call looks wrong: **the runtime keeps
+  whatever it is given as container configuration.** Create a container that way and
+  `docker inspect --format '{{json .Config.Env}}'` hands the value back in full, for as
+  long as the container exists. Writing no file yourself is not the same as no file
+  existing — the runtime writes files too.
 
-`docker.ts` therefore imports nothing from `node:fs` and writes no file at all. A test
-guards that at the source level, because a write added later is invisible to any
-behavioural test that did not happen to look for the file it wrote.
+What the driver does instead: **creation passes no environment at all, and every process
+started by `exec` is sent its credentials on its own standard input.** A tiny shell reads
+`NAME=value` lines until an empty one, exports them, and `exec`s the real command, so the
+secret lives in a pipe and in one process's memory and nowhere else. `docker.ts` imports
+nothing from `node:fs` and writes no file; a source-level test guards that, and a second
+test asserts against `docker inspect`, because the file the old mechanism caused was the
+runtime's rather than this driver's and no source-level check could have seen it.
+
+**Delivery is per process, not at creation, and it cannot be moved.** A process started by
+`docker exec` takes its environment from the container's configuration — not from the
+process already running inside it — so an entrypoint that read the block and exported it
+would be the only thing that ever saw it. Verified: a container whose PID 1 exports a
+variable, then `docker exec … printenv`, and the variable is absent.
+
+The cost is a line protocol, so **a credential value may not contain a newline.** Creation
+refuses one that does, naming the credential and never the value. If a multi-line secret
+ever has to be carried — a PEM key is the obvious candidate — the change is to the block's
+encoding, and whatever replaces it has to keep the same property: nothing on a command
+line, nothing the runtime writes down.
 
 ## Asking whether a workspace exists: `volume ls`, never `volume inspect`
 
@@ -78,7 +96,9 @@ any other existence question here. The same lesson, learned the same way, is rec
 
 `sh` and `sleep`, and nothing else. Creation starts a shell loop as a trivial idle
 entrypoint and `exec` is what starts real processes; a long single `sleep` is avoided
-because the maximum argument `sleep` accepts varies between implementations.
+because the maximum argument `sleep` accepts varies between implementations. `exec` goes
+through `sh` too, since that is what reads the credential block — so the shell is a
+requirement of running anything here, not only of idling.
 
 An image with no shell is created and then fails to start. That is the behaviour
 `hello-world:latest` is used for in the tests, and it is the **only** case that leaves a
