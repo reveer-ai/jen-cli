@@ -26,7 +26,7 @@ The sandbox interface SHALL consist of exactly four operations: root a filesyste
 
 No type, field, parameter or return value on the interface SHALL name a concept belonging to one driver's implementation. A container identifier, an image reference, a daemon socket, a process identifier, or a temporary directory path SHALL NOT appear on it.
 
-The interface is narrow so that a different isolation mechanism can later be placed behind it without reshaping anything above. It is not a plugin system: no driver beyond the two this capability defines SHALL be added without a change that states why.
+The interface is narrow so that a different isolation mechanism can later be placed behind it without reshaping anything above.
 
 #### Scenario: The interface exposes four operations
 
@@ -42,20 +42,36 @@ The interface is narrow so that a different isolation mechanism can later be pla
 
 The substrate SHALL provide exactly two sandbox drivers: a container driver, which is the only one providing isolation, and an in-process driver, which provides none.
 
-A single conformance suite SHALL define the behaviour every driver must exhibit, and SHALL be executed against both. Behaviour that depends on real isolation SHALL be tested against the container driver alone.
+A single conformance suite SHALL define the behaviour every driver must exhibit, and SHALL be executed against both. A case in that suite SHALL run against every driver unless it is declared to require isolation, and the declared isolation-requiring cases SHALL be enumerable — so that the cases a given driver did not run are a stated set rather than an accident of which tests happened to pass.
 
 Two implementations are what hold the interface to being an interface. A single implementation admits assumptions belonging to its mechanism without anything detecting them, and the seam is then fiction at the moment something needs to be placed behind it.
 
-#### Scenario: Both drivers satisfy the shared suite
+#### Scenario: Both drivers run the shared suite
 
 - **WHEN** the conformance suite is executed
-- **THEN** it runs against both drivers
-- **AND** both satisfy every behaviour that does not depend on isolation
+- **THEN** every case not declared to require isolation runs against both drivers
+- **AND** both satisfy it
 
-#### Scenario: A driver-specific assumption is caught
+#### Scenario: A case cannot be quietly skipped for one driver
 
-- **WHEN** a change introduces a container-specific assumption into the shared interface or its shared behaviour
-- **THEN** the conformance suite fails against the in-process driver
+- **WHEN** the conformance suite is executed and the cases each driver ran are compared
+- **THEN** the difference between them is exactly the set of cases declared to require isolation
+
+### Requirement: The driver set is closed, and there is no plugin mechanism
+
+The available drivers SHALL be a closed set, fixed in the substrate's own source. The substrate SHALL NOT provide a driver registry, SHALL NOT load a driver dynamically, and SHALL NOT accept configuration naming an implementation to load.
+
+The interface exists so that a different isolation mechanism — a sandboxed kernel, a microVM — can be placed behind it later by a change to this capability. That is a deliberate act with a spec behind it, not an extension point for arbitrary implementations, and building the machinery for the second invites the first to be skipped.
+
+#### Scenario: No dynamic driver loading
+
+- **WHEN** the substrate's sources are examined
+- **THEN** no code path loads a driver by name from configuration, from the environment, or from the filesystem
+
+#### Scenario: Selection is from the known set
+
+- **WHEN** a driver is selected
+- **THEN** it is one of the drivers this capability defines
 
 ### Requirement: The in-process driver is a fixture and is never reachable in a real run
 
