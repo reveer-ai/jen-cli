@@ -198,6 +198,23 @@ matched, so a non-zero exit means only that something really failed. Prefer that
 any other existence question here. The same lesson, learned the same way, is recorded for
 `git fetch` in [`cli/AGENTS.md`](../cli/AGENTS.md).
 
+## Creation assumes one call at a time per agent
+
+Asking whether the workspace exists and then creating it are two steps, and the gap between
+them is what decides whether a failed creation is allowed to delete the workspace on its way
+out. Two `create` calls for the **same** agent could both find it absent, both make it, and
+both believe they made it — after which a failure in either takes the other's work with it.
+
+Nothing here defends against that, deliberately. A sandbox is provisioned for an agent that
+is about to work, and an agent is either suspended or working, so the supervisor has no
+reason to hold two in flight for one agent. That is an assumption about the caller living in
+this code, and nothing here would notice if it stopped being true — so if the supervisor ever
+grows a path that could provision the same agent twice at once, this is the thing that breaks,
+and it breaks by deleting data rather than by erroring.
+
+Concurrent creation for *different* agents is fine: the container name, the workspace name and
+the labels all derive from the agent id, so nothing is shared.
+
 ## What a sandbox image has to provide
 
 `sh` and `sleep`, and nothing else. Creation starts a shell loop as a trivial idle
