@@ -1,0 +1,24 @@
+{
+  // Deliberately does NOT extend the repository's `tsconfig.json`. That one sets
+  // `rootDir: "cli"` and `outDir: "dist"`, and `dist/` is the directory the published
+  // tarball is built from — inheriting either would aim substrate output at it. The
+  // compiler options below are restated instead. The duplication is the point: the two
+  // configurations are independent on purpose, and `agent-substrate` requires the
+  // substrate to stay outside the repository's build, checks, and package.
+  //
+  // `noEmit` makes this a typecheck rather than a build, so there is no artifact to
+  // ignore, clean, or accidentally publish.
+  "compilerOptions": {
+    "target": "es2023",
+    "lib": ["es2023"],
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
+    "types": ["node"],
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "verbatimModuleSyntax": true,
+    "skipLibCheck": true,
+    "noEmit": true
+  },
+  "include": ["**/*.ts"]
+}
