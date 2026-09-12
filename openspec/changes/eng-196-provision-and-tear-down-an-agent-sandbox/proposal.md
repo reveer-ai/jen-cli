@@ -32,27 +32,43 @@ directory up.
   so no new ignore rule.
 - **The sandbox interface: four operations.** Root a filesystem, exec a process, configure
   network, inject secrets — plus create and destroy. Narrow on purpose, so a hosted tier can
-  later put gVisor or Firecracker behind it. It is not a plugin system and gains no third
-  driver.
+  later put gVisor or Firecracker behind it. It is not a plugin system: the driver set is
+  closed in source, with no registry, no dynamic loading, and no configuration naming an
+  implementation to load.
 - **A Docker driver**, which issues container lifecycle commands by running the `docker`
   binary as a subprocess — the pattern [`cli/exec.ts`](../../../cli/exec.ts) already uses
-  throughout. No client library, and therefore no dependency. It is the only driver providing
-  real isolation: no host directory mounted in, the container socket never mounted in,
+  throughout. No client library, and therefore no dependency. It is the only driver, and it
+  is what isolation means here: no host directory mounted in, the container socket never
+  mounted in,
   credentials arriving as environment so they die with the container rather than needing
   cleanup, and parallel agents never sharing a mount.
-- **An in-process driver**, which is not optional and is not a fallback. A sandbox becomes a
-  child process with a temp directory as its workspace — no isolation, and none intended. Its
-  whole job is to let the substrate's tests and ENG-199's recursive acceptance run execute
-  with no daemon, in milliseconds. It also proves the interface is an interface rather than
-  `docker run` with extra steps.
-- **One conformance suite, run against both drivers.** That is what actually holds the two to
-  the same contract. Tests requiring real isolation are Docker's alone.
+- **One driver, and a second deliberately deferred.** ENG-196 called an unisolated
+  in-process driver — plain processes in a temp directory, for tests that need no daemon —
+  "not optional". On examination the case for building it *now* does not hold. Its practical
+  arguments are weak at realistic scale: a container runtime is a setup step rather than a
+  blocker, a per-cycle leak surfaces within a few dozen cycles rather than a thousand, and
+  the recursive acceptance run is tens of container boots, not thousands. What it would buy
+  is a check on *semantic* assumptions leaking into the interface — but it would also carry a
+  risk with no mitigation available here, since nothing in CI runs `agent/`: the unisolated
+  driver would plausibly become the only one anything ever exercises, leaving the real driver
+  to rot untested behind green checks.
+  **So it is deferred, and the deferral improves it.** A second driver written against a
+  container driver already tuned to this substrate's actual use is a far better-fitted thing
+  than one written against a hypothetical. Adding it is a change to the capability when a
+  concrete need arrives.
+- **The interface requirement therefore does the work a second driver would have done.** With
+  one implementation, nothing exercises the interface independently, so its independence is
+  held by a single rule: no container identifier, image reference, daemon socket, process
+  identifier or host path may appear in its declarations. That is checkable by reading the
+  interface, which is the half of the problem a second driver was not needed for.
+- **An absent or unreachable container runtime is an error, never a downgrade.** Creation
+  fails and names the cause. It does not fall back to anything less isolated — not now, and
+  not when a second driver exists. A run that quietly loses its isolation is
+  indistinguishable from one that kept it.
 - **Network is unrestricted.** The operation exists on the interface so a policy can be
   applied later without reshaping anything; no allowlist is built or enforced. The condition
   for revisiting is egress on shared infrastructure, and it is recorded rather than left
   implicit.
-- **The in-process driver must never be reachable in a real run.** Driver selection is
-  explicit and the in-process driver is never the default.
 - **Not in scope, and named so it is not mistaken for an oversight:** no CI check covers
   `agent/`. Nothing automated will catch a regression there until someone runs its tests by
   hand. This is a deliberate consequence of keeping the substrate unwired while its shape is
@@ -74,10 +90,11 @@ eventually meant to supersede.
   and published tarball, with the conditions under which that stops being true. Thin now and
   shared by every later task in the epic, which all land in the same directory under the same
   boundary.
-- `agent-sandbox`: the sandbox primitive — its four operations, the two drivers and what each
-  is for, the isolation the Docker driver guarantees, the ephemeral-container/durable-workspace
-  lifetime, leak-freeness across many cycles, and the failure modes (creation that fails
-  halfway, destruction of something already gone, destruction of something still running).
+- `agent-sandbox`: the sandbox primitive — its four operations, the single container driver
+  and the closed driver set, the isolation it guarantees, the ephemeral-container/durable-workspace
+  lifetime, leak-freeness under repetition, and the failure modes (creation that fails
+  halfway, destruction of something already gone, destruction of something still running, a
+  runtime that is unreachable).
 
 ### Modified Capabilities
 
@@ -85,7 +102,7 @@ eventually meant to supersede.
 
 ## Impact
 
-- `agent/` — new: the interface, the two drivers, the conformance suite, `tsconfig.json`,
+- `agent/` — new: the interface, the container driver, its tests, `tsconfig.json`,
   `vitest.config.ts`.
 - **Nothing at the repository root changes.** `package.json`, `tsconfig.json`,
   `tsconfig.test.json`, `vitest.config.ts`, `.gitignore` and `.github/workflows/ci.yml` are
@@ -97,7 +114,7 @@ eventually meant to supersede.
   requirement is satisfied by the addition rather than changed by it, so it takes no delta.
   This is the one place the substrate touches jen's existing documentation, and it touches it
   by being described there, not by changing what jen does.
-- `agent/AGENTS.md` — the Docker daemon is not running on this machine, so the Docker driver
-  cannot be verified locally today and its tests skip. A note recording that, and recording
-  that a skip is currently indistinguishable from a pass because nothing in CI runs them.
+- `agent/AGENTS.md` — that the substrate's tests require a running container runtime and are
+  not run by CI, so they are only ever exercised by a person who remembers to. Worth a note
+  precisely because nothing reports their absence.
 - No changeset. Nothing here is built, shipped, or reachable from the published CLI.

@@ -78,7 +78,7 @@ A configuration of the substrate's own is what makes the strictness real. Withou
 
 The substrate SHALL NOT introduce a package manifest of its own, and SHALL NOT add a dependency to the repository's. It SHALL use the tooling the repository already carries.
 
-A manifest is warranted by a dependency and by nothing else. The substrate has none: its sandbox drivers reach the container runtime by running its command-line client as a subprocess rather than through a client library, which is also the pattern the CLI already uses for every child process it starts.
+A manifest is warranted by a dependency and by nothing else. The substrate has none: its sandbox driver reaches the container runtime by running its command-line client as a subprocess rather than through a client library, which is also the pattern the CLI already uses for every child process it starts.
 
 If the substrate later requires a dependency the repository does not carry, or is to be published separately, it SHALL gain its own manifest in the change that makes either true.
 

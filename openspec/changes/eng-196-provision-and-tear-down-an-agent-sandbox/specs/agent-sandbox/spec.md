@@ -24,9 +24,9 @@ Creation SHALL take the agent's record and yield a handle through which the sand
 
 The sandbox interface SHALL consist of exactly four operations: root a filesystem, execute a process, configure network, and inject secrets — alongside creation and destruction.
 
-No type, field, parameter or return value on the interface SHALL name a concept belonging to one driver's implementation. A container identifier, an image reference, a daemon socket, a process identifier, or a temporary directory path SHALL NOT appear on it.
+No type, field, parameter or return value on the interface SHALL name a concept belonging to one driver's implementation. A container identifier, an image reference, a daemon socket, a process identifier, or a host filesystem path SHALL NOT appear on it.
 
-The interface is narrow so that a different isolation mechanism can later be placed behind it without reshaping anything above.
+This requirement carries more weight than it would if several drivers existed. A container driver is the only implementation at this stage, so nothing else exercises the interface and nothing else can reveal an assumption that leaked into it. The interface's independence is therefore held by this requirement alone, and it SHALL be checkable by reading the interface's declarations rather than inferred from the implementation's behaviour.
 
 #### Scenario: The interface exposes four operations
 
@@ -35,33 +35,16 @@ The interface is narrow so that a different isolation mechanism can later be pla
 
 #### Scenario: No driver concept leaks onto the interface
 
-- **WHEN** the sandbox interface's types are examined
-- **THEN** none of them names a container, an image, a daemon socket, a process identifier, or a filesystem path belonging to one driver
+- **WHEN** the sandbox interface's declarations are examined
+- **THEN** none of them names a container, an image, a daemon socket, a process identifier, or a host filesystem path
 
-### Requirement: Two drivers implement the interface, and both satisfy one conformance suite
+### Requirement: A container driver is the only driver, and the driver set is closed
 
-The substrate SHALL provide exactly two sandbox drivers: a container driver, which is the only one providing isolation, and an in-process driver, which provides none.
-
-A single conformance suite SHALL define the behaviour every driver must exhibit, and SHALL be executed against both. A case in that suite SHALL run against every driver unless it is declared to require isolation, and the declared isolation-requiring cases SHALL be enumerable — so that the cases a given driver did not run are a stated set rather than an accident of which tests happened to pass.
-
-Two implementations are what hold the interface to being an interface. A single implementation admits assumptions belonging to its mechanism without anything detecting them, and the seam is then fiction at the moment something needs to be placed behind it.
-
-#### Scenario: Both drivers run the shared suite
-
-- **WHEN** the conformance suite is executed
-- **THEN** every case not declared to require isolation runs against both drivers
-- **AND** both satisfy it
-
-#### Scenario: A case cannot be quietly skipped for one driver
-
-- **WHEN** the conformance suite is executed and the cases each driver ran are compared
-- **THEN** the difference between them is exactly the set of cases declared to require isolation
-
-### Requirement: The driver set is closed, and there is no plugin mechanism
+The substrate SHALL provide exactly one sandbox driver: a container driver, which reaches the container runtime by running its command-line client as a subprocess rather than through a client library.
 
 The available drivers SHALL be a closed set, fixed in the substrate's own source. The substrate SHALL NOT provide a driver registry, SHALL NOT load a driver dynamically, and SHALL NOT accept configuration naming an implementation to load.
 
-The interface exists so that a different isolation mechanism — a sandboxed kernel, a microVM — can be placed behind it later by a change to this capability. That is a deliberate act with a spec behind it, not an extension point for arbitrary implementations, and building the machinery for the second invites the first to be skipped.
+A second driver — a sandboxed kernel, a microVM, or an unisolated one serving the substrate's own tests — is expected and is deliberately deferred. It is a change to this capability when a concrete need arrives, written against a container driver whose behaviour has by then been settled in practice. Building it first would mean guessing at the seam it is meant to fit.
 
 #### Scenario: No dynamic driver loading
 
@@ -71,26 +54,7 @@ The interface exists so that a different isolation mechanism — a sandboxed ker
 #### Scenario: Selection is from the known set
 
 - **WHEN** a driver is selected
-- **THEN** it is one of the drivers this capability defines
-
-### Requirement: The in-process driver is a fixture and is never reachable in a real run
-
-The in-process driver SHALL create no isolation of any kind. Its workspace is an ordinary directory on the host and its processes are ordinary host processes, carrying the privileges of the user running the supervisor.
-
-It exists so that the substrate's own tests and its recursive acceptance run execute with no container runtime present, in milliseconds, on any machine. It is a test fixture wearing the sandbox's shape, never a lightweight alternative and never a fallback.
-
-Driver selection SHALL be explicit. The in-process driver SHALL NOT be the default, and SHALL NOT be selected automatically under any condition — in particular, a container runtime that is absent, unreachable, or failing SHALL cause an error rather than a silent substitution. A run that quietly degrades to no isolation is worse than one that fails, because nothing distinguishes it from a run that was isolated.
-
-#### Scenario: Selection is explicit
-
-- **WHEN** a sandbox is created without a driver being named
-- **THEN** the in-process driver is not selected
-
-#### Scenario: An absent container runtime is an error, not a downgrade
-
-- **WHEN** the container driver is selected and no container runtime is reachable
-- **THEN** creation fails with an error naming the cause
-- **AND** the in-process driver is not substituted
+- **THEN** it is the driver this capability defines
 
 ### Requirement: The container driver isolates the agent from the host and from other agents
 
@@ -102,12 +66,12 @@ Sandboxes SHALL NOT share a workspace. Two sandboxes live at the same time SHALL
 
 #### Scenario: No host directory is mounted
 
-- **WHEN** a sandbox is created by the container driver
+- **WHEN** a sandbox is created
 - **THEN** no directory from the host filesystem is mounted into it
 
 #### Scenario: The runtime socket is never mounted
 
-- **WHEN** a sandbox is created by the container driver
+- **WHEN** a sandbox is created
 - **THEN** the container runtime's socket is not present inside it
 
 #### Scenario: Two sandboxes cannot see each other
@@ -122,7 +86,7 @@ An agent record SHALL carry credentials as references rather than as values, so 
 
 The sandbox SHALL resolve each reference and deliver the resulting secret into the sandbox's environment at creation. It SHALL NOT write a secret to any file, inside the sandbox or outside it, and SHALL NOT place a secret on a command line.
 
-Delivering secrets as environment makes their disposal a property of the sandbox's destruction rather than a cleanup step that can be skipped or interrupted.
+Delivering secrets as environment makes their disposal a property of the sandbox's destruction rather than a cleanup step that can be skipped or interrupted. The command-line prohibition is the one that is easy to violate by accident, because the driver reaches the runtime by building command lines: a process's arguments are readable by other processes on the host, so a secret passed that way is disclosed to the whole machine for the life of the call.
 
 #### Scenario: A reference is resolved into the environment
 
@@ -130,10 +94,11 @@ Delivering secrets as environment makes their disposal a property of the sandbox
 - **THEN** the resolved secret is present in the sandbox's environment
 - **AND** the reference itself is what the record still holds
 
-#### Scenario: No secret reaches disk
+#### Scenario: No secret reaches disk or a command line
 
 - **WHEN** a sandbox is created from a record carrying a credential reference
 - **THEN** no file written by creation contains the resolved secret
+- **AND** no command line assembled by creation contains it
 
 #### Scenario: Secrets die with the sandbox
 
@@ -168,31 +133,32 @@ The workspace SHALL outlive the sandbox that mounted it. It SHALL be destroyed w
 - **WHEN** an agent's workspace is released
 - **THEN** the storage it occupied is reclaimed
 
-### Requirement: Destruction leaves nothing behind, across many cycles
+### Requirement: Destruction leaves nothing behind, and repetition accumulates nothing
 
-Destroying a sandbox SHALL release every resource it held. After destruction there SHALL be no surviving container, no surviving process, no leaked file descriptor, and no credential readable anywhere.
+Destroying a sandbox SHALL release every resource it held. After destruction there SHALL be no surviving container, no surviving volume, no surviving process, no leaked file descriptor, and no credential readable anywhere.
 
-Repeated creation and destruction SHALL NOT accumulate resources. A large number of cycles SHALL leave the host in the state it started in.
+Repeated creation and destruction SHALL NOT accumulate resources. The number of cycles exercised SHALL be enough to surface a per-cycle leak — a leak of one resource per cycle is visible within a few dozen — rather than a number chosen for its size.
 
 Leak-freeness matters here in a way it would not for a once-per-run environment: because a sandbox is created and destroyed on every suspension, a resource leaked once is leaked on a schedule.
 
 #### Scenario: A cycle leaves nothing
 
 - **WHEN** a sandbox is created and then destroyed
-- **THEN** no container, process, or credential belonging to it remains
+- **THEN** no container, volume, process, or credential belonging to it remains
 
-#### Scenario: Many cycles accumulate nothing
+#### Scenario: Repetition accumulates nothing
 
-- **WHEN** a large number of create/destroy cycles are run
+- **WHEN** create/destroy is cycled enough times to surface a per-cycle leak
 - **THEN** no containers, volumes, processes, or file descriptors have accumulated
 
 ### Requirement: The failure modes are defined rather than incidental
 
-The sandbox SHALL define its behaviour for the three failures that arise from its own lifecycle:
+The sandbox SHALL define its behaviour for the failures that arise from its own lifecycle:
 
 - **Creation that fails partway.** Creation SHALL NOT leave a partially provisioned sandbox behind. Whatever was provisioned before the failure SHALL be released, and the failure SHALL be reported to the caller.
-- **Destroying something already gone.** Destruction of a sandbox that no longer exists SHALL succeed rather than fail. The supervisor's sweep and its ordinary teardown can both reach the same sandbox, and a teardown path that fails on an absent target turns cleanup into a source of errors.
+- **Destroying something already gone.** Destruction of a sandbox that no longer exists SHALL succeed rather than fail. A sweep and an ordinary teardown can both reach the same sandbox, and a teardown path that fails on an absent target turns cleanup into a source of errors.
 - **Destroying something still running.** Destruction of a sandbox whose process is still running SHALL stop it and release its resources rather than waiting for it or refusing.
+- **A container runtime that is absent or unreachable.** Creation SHALL fail with an error naming the cause. It SHALL NOT degrade to a less isolated arrangement, now or when a second driver exists. A run that quietly loses its isolation is indistinguishable from one that kept it, which makes silent degradation worse than failure.
 
 #### Scenario: A half-created sandbox is cleaned up
 
@@ -210,6 +176,12 @@ The sandbox SHALL define its behaviour for the three failures that arise from it
 - **WHEN** a sandbox whose process is still running is destroyed
 - **THEN** the process is stopped
 - **AND** its resources are released
+
+#### Scenario: An unreachable runtime is an error, not a downgrade
+
+- **WHEN** a sandbox is created and no container runtime is reachable
+- **THEN** creation fails with an error naming the cause
+- **AND** no less isolated arrangement is substituted
 
 ### Requirement: Network configuration is an operation, and is unrestricted
 
