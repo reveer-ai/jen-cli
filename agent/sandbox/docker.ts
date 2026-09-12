@@ -97,6 +97,9 @@ export interface Started {
  * caller — credential delivery — and it is why that delivery leaves no trace anywhere else
  * in this module: a secret sent this way is in a pipe and in the receiving process's
  * memory, and in no argument, no file, and no record the runtime keeps.
+ *
+ * Part of the contract, and the part a wrapper around this cannot leave to the default: a
+ * pipe that breaks is reported through `exit` and never as an uncaught error.
  */
 export type Spawner = (command: string, args: string[], env: NodeJS.ProcessEnv, input?: string) => Started;
 
@@ -106,11 +109,45 @@ export const spawner: Spawner = (command, args, env, input) => {
   // calls that send nothing it would be a descriptor per call, and descriptors are one of
   // the things a create/destroy cycle is required not to accumulate.
   const child = spawn(command, args, { env, stdio: [input === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'] });
-  child.stdin?.end(input);
+
+  // **Every pipe is listened to, and that is not defensive tidiness.** A stream reports its
+  // own failure by emitting `error`, and an `error` with nothing listening is not dropped:
+  // Node raises it as an uncaught exception and the process dies. The process here is the
+  // supervisor, so one agent's broken pipe would end every other agent's run with it.
+  //
+  // The reachable case is the credential block with no reader left — `docker exec` refused,
+  // or a container gone between the call and the runtime's attempt at it — which ends the
+  // write in `EPIPE`. That error is emitted on `child.stdin`, never on `child`, so the
+  // listeners below are not where it arrives.
+  let broken: Error | undefined;
+  for (const pipe of [child.stdin, child.stdout, child.stderr]) {
+    pipe?.on('error', (error: Error) => {
+      broken ??= error;
+    });
+  }
+
   const exit = new Promise<Exit>((resolve, reject) => {
     child.on('error', reject);
-    child.on('close', (code, signal) => resolve({ code, signal }));
+    child.on('close', (code, signal) => {
+      // A broken pipe means something did not arrive: credentials on the way in, or output
+      // on the way back. Where the subprocess failed anyway, its own exit and its stderr
+      // account for that better than the broken pipe does, and that is what the caller
+      // gets — a failed process, which is what a caller can act on. Where it *succeeded*,
+      // nothing else would ever mention it: a command that ran without the credentials it
+      // was sent looks exactly like one that had them, and that is the case this must not
+      // let pass as a success.
+      if (broken !== undefined && code === 0) {
+        reject(new SandboxError(`a pipe to \`${command}\` broke before it was finished with: ${broken.message}`, { cause: broken }));
+        return;
+      }
+      resolve({ code, signal });
+    });
   });
+
+  // After the listeners, not before: this write is asynchronous, and its failure is one of
+  // the events they exist to catch.
+  child.stdin?.end(input);
+
   // `stdout`/`stderr` are non-null under the `pipe` stdio above; the types allow null
   // because other stdio settings would leave them absent.
   return { stdout: child.stdout as Readable, stderr: child.stderr as Readable, exit };
@@ -343,7 +380,10 @@ export class DockerSandboxDriver implements SandboxDriver {
   #start(args: string[], input?: string): Process {
     const started = this.#spawn(this.#docker, args, this.#env, input);
     const exit = started.exit.catch((error: unknown) => {
-      throw this.#unreachable(error);
+      // A broken pipe is already this driver's own account of what happened, and the
+      // runtime was reachable enough to break it. Only a failure to run it at all is
+      // #unreachable, and reporting the two the same way would name the wrong cause.
+      throw error instanceof SandboxError ? error : this.#unreachable(error);
     });
     // The caller is not obliged to await this, and an unawaited rejection is a crash.
     exit.catch(() => {});
@@ -359,7 +399,7 @@ export class DockerSandboxDriver implements SandboxDriver {
     try {
       return { ...(await started.exit), stdout, stderr };
     } catch (error) {
-      throw this.#unreachable(error);
+      throw error instanceof SandboxError ? error : this.#unreachable(error);
     }
   }
 

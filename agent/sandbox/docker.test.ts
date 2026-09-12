@@ -544,3 +544,51 @@ describe('exec hands back a running process', () => {
     await subject.releaseWorkspace(agent.id);
   });
 });
+
+describe('a broken pipe fails the process, not the caller', () => {
+  // Ten megabytes because a pipe holds around sixty-four kilobytes: the write cannot finish
+  // in one go, so the remainder is still outstanding when the reader goes away and `EPIPE`
+  // is certain rather than a matter of timing. A credential block is a few hundred bytes —
+  // the size here is what makes the failure reproducible, not what makes it possible.
+  const MORE_THAN_A_PIPE_HOLDS = 'x'.repeat(10 * 1024 * 1024);
+
+  // Read the first two as a pair, because separately neither is enough — this was checked
+  // by mutation rather than assumed. Take the pipe listeners away and the first one still
+  // passes: **vitest installs an `uncaughtException` handler of its own**, so the `EPIPE`
+  // that kills a supervisor is caught here instead, `close` arrives, and the exit is what
+  // it should be. The run goes red, but as an "Uncaught Exception" beside a green test, and
+  // that is easy to read as noise. The second is the one that fails outright, because a
+  // delivery that never happened resolves as a success. So: the first says what the caller
+  // is owed, the second is what notices when the handling goes.
+  it('reports the subprocess’s own failure when its input has nowhere to go', async () => {
+    const started = spawner('sh', ['-c', 'exit 7'], process.env, MORE_THAN_A_PIPE_HOLDS);
+
+    // The failed exit, not a rejection: a caller can act on a process that failed, and the
+    // subprocess's own account of why is better than the broken pipe's.
+    expect(await started.exit).toMatchObject({ code: 7 });
+  });
+
+  it('refuses to report a delivery that never arrived as a success', async () => {
+    const started = spawner('sh', ['-c', 'exit 0'], process.env, MORE_THAN_A_PIPE_HOLDS);
+
+    // The dangerous half. A command that exits zero without the credentials it was sent is
+    // indistinguishable from one that had them, so this is the only place it can be said.
+    await expect(started.exit).rejects.toThrow(SandboxError);
+    await expect(started.exit).rejects.toThrow(/EPIPE/);
+  });
+
+  it('reports a failure rather than crashing when the sandbox is gone before exec reaches it', async () => {
+    // The way this is actually reached: the supervisor holds a handle, the container is
+    // swept or dies, and the next process it starts finds nothing to start in.
+    const subject = driver();
+    const agent = record();
+    const sandbox = await subject.create(agent);
+    await sandbox.destroy();
+
+    const gone = await inside(sandbox, ['echo', 'unreachable']);
+    expect(gone.code === 0).toBe(false);
+    expect(gone.err).toMatch(/[Nn]o such container/);
+
+    await subject.releaseWorkspace(agent.id);
+  });
+});

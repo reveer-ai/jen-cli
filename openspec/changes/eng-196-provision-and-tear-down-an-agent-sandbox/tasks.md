@@ -22,7 +22,7 @@
 
 - [x] 4.1 Write `agent/sandbox/docker.ts`, reaching the runtime by running the `docker` CLI as a subprocess. No client library, and no dependency added to the repository's manifest.
 - [x] 4.2 Implement `create`: ensure the agent's workspace volume, then start a container from the record's image with a trivial idle entrypoint, the volume mounted at the workspace path, and `jen.run` / `jen.agent` labels applied.
-- [x] 4.3 Deliver credentials by resolving each reference at creation and sending it to each process as it starts, over that process's own stdin: `docker exec -i … sh -c DELIVER sh <command>`, where `DELIVER` reads `NAME=value` lines until an empty one, exports them and `exec`s the command. Creation passes the runtime no environment at all. Never `-e NAME=value`, which puts the secret in argv where every process on the host can read it; never `--env-file`, which puts it on disk; and never bare `-e NAME`, which keeps it out of argv and puts it in the container's configuration instead — see 1.2. A value containing a newline cannot ride a line protocol, so creation refuses one, naming the credential and never the value.
+- [x] 4.3 Deliver credentials by resolving each reference at creation and sending it to each process as it starts, over that process's own stdin: `docker exec -i … sh -c DELIVER sh <command>`, where `DELIVER` reads `NAME=value` lines until an empty one, exports them and `exec`s the command. Creation passes the runtime no environment at all. Never `-e NAME=value`, which puts the secret in argv where every process on the host can read it; never `--env-file`, which puts it on disk; and never bare `-e NAME`, which keeps it out of argv and puts it in the container's configuration instead — see 1.2. A value containing a newline cannot ride a line protocol, so creation refuses one, naming the credential and never the value. Listen for `error` on every pipe of the spawned process: an `EPIPE` from an unread credential block is emitted on the stdin stream rather than on the child, and unhandled it terminates the supervisor.
 - [x] 4.4 Mount no host directory, and never the runtime's socket.
 - [x] 4.5 Implement `exec` over `docker exec`, returning the streaming handle from 3.2.
 - [x] 4.6 Implement `destroy` as an explicit `docker rm -f`, not by passing `--rm` at creation, so destruction is this code's decision and is observable in a test.
@@ -49,6 +49,7 @@ Everything below is written alongside the code it covers. Nothing automated will
 - [x] 5.11 Creation with no reachable daemon fails with an error naming the cause.
 - [x] 5.12 A sandbox for a record naming no parent is created by the same path as one at any depth — the primitive reads nothing about hierarchy.
 - [x] 5.13 `exec` streams output as it is produced rather than at process exit. This is the property ENG-213 depends on and the one a buffered implementation would silently fail.
+- [x] 5.14 A credential block whose reader is gone reports a failed process rather than terminating the caller, and is never reported as a *success* — the second is what fails outright if the handling is removed, because vitest's own `uncaughtException` handler catches the crash the first would otherwise show. `exec` into a sandbox already destroyed reports the runtime's failure too.
 
 ## 6. Notes and close-out
 

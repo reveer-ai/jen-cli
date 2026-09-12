@@ -89,6 +89,8 @@ spawn('docker', ['exec', '-i', name, 'sh', '-c', DELIVER, 'sh', ...command]);
 
 Creation still resolves the references, so a credential that cannot be resolved fails the creation it belongs to and unwinds with it; what moved is only when the value is handed over. The secret is then in a pipe and in one process's memory — in no argv, no file, and nothing the runtime writes down. The cost is a line protocol: a value carrying a newline cannot be delivered, and creation refuses one rather than truncating it.
 
+**The second cost, found in review: a pipe can break, and an unattended break is fatal.** If nothing is left reading — `docker exec` refused, or the container gone between the call and the runtime's attempt at it — the write ends in `EPIPE`, which the stream emits as an `error` event. An `error` with no listener is not dropped; Node raises it as an uncaught exception, and the process it kills is the supervisor, so one agent's broken pipe would end every other agent's run with it. The listener for it goes on the stdin stream, not on the child: the child's own `error` covers a failure to spawn and nothing after. A broken pipe then surfaces through `exit` — as the subprocess's own failing exit where it has one, since its stderr accounts for the failure better than the pipe does, and as a rejection where the subprocess exited *zero*, because a command that ran without the credentials it was sent looks exactly like one that had them.
+
 ### Destruction is explicit, not `--rm`
 
 `destroy` runs `docker rm -f` rather than creation passing `--rm` and relying on exit.

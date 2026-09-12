@@ -76,6 +76,31 @@ ever has to be carried — a PEM key is the obvious candidate — the change is 
 encoding, and whatever replaces it has to keep the same property: nothing on a command
 line, nothing the runtime writes down.
 
+## Every pipe of a subprocess needs an `error` listener
+
+A stream reports its own failure by emitting `error`, and an `error` with nothing listening
+is not dropped — Node raises it as an uncaught exception and the process dies. The process
+running this is the supervisor, so one agent's broken pipe would end every other agent's
+run along with it.
+
+**`child.on('error', …)` does not cover it**, and that is the part worth remembering. A
+failed write to standard input emits on `child.stdin`, never on `child`; the child listener
+catches a failure to *spawn* and nothing after. The reachable case here is the credential
+block with no reader left — `docker exec` refused, or a container gone between `exec` and
+the runtime's attempt at it — which ends the write in `EPIPE`.
+
+**The suite will not tell you plainly if this is removed.** Vitest installs an
+`uncaughtException` handler of its own, so under the tests the crash is caught, `close`
+still arrives, and the exit is correct: the run goes red with an "Uncaught Exception" beside
+a *passing* test, which reads like noise. Nothing installs that handler for the supervisor.
+The test that fails outright is the other half of the pair — that a broken pipe must not
+resolve as a success.
+
+Which is the policy: a broken pipe surfaces through `exit`, as the subprocess's own failing
+exit where it has one (its stderr says more about why than the pipe does), and as a
+rejection where the subprocess exited *zero* — because a command that ran without the
+credentials it was sent looks exactly like one that had them.
+
 ## Asking whether a workspace exists: `volume ls`, never `volume inspect`
 
 `docker volume inspect` exits non-zero both when the workspace is absent and when the
