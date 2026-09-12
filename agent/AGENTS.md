@@ -76,6 +76,49 @@ ever has to be carried — a PEM key is the obvious candidate — the change is 
 encoding, and whatever replaces it has to keep the same property: nothing on a command
 line, nothing the runtime writes down.
 
+## A record's fields are caller data, and two places take them literally
+
+`AgentRecord` is data the supervisor hands over. Two of its fields used to be passed
+straight through into places that read them as instructions rather than as values, and both
+were invisible because the call sites looked like ordinary string interpolation.
+
+**The runtime's argument list has an option-parsing position, and `record.environment` sat
+in it.** `docker run [OPTIONS] IMAGE …` parses options until the first operand, so an
+environment of `--help` is consumed as the help flag — which **exits zero and creates
+nothing**, so a driver that checks only for a non-zero exit accepts the creation and returns
+a handle to a container that was never made. The same position accepts `--privileged`, which
+would hand away the isolation the primitive exists to provide, from a record rather than
+from any code.
+
+Two things hold it now, and they are kept together because they fail differently:
+
+- `--` before the image. Option parsing ends there, so whatever follows is read as an image
+  reference however it is spelled — `run … -- --privileged` exits 125 with `invalid
+  reference format`. This is the structural fix, and it is a property of *this* runtime's
+  argument parser.
+- A refusal of an empty environment or one starting with `-`. This is a property of the
+  module, holds against a runtime whose parser differs, and gives the caller an error that
+  names the cause. Deliberately **not** an image-reference grammar: what a reference may
+  look like belongs to the runtime and its registry, and deciding it here would start
+  refusing things the runtime accepts.
+
+Any other caller value that ends up in operand position needs the same treatment. Values
+passed as a *flag's argument* (`--workdir`, `--volume`, `--name`) are already safe — the
+parser has consumed the flag and takes the next token as its value.
+
+**And a credential name is read by a shell, which is stricter than the protocol carrying
+it.** Delivery is a line of `NAME=value` text, and a name like `1BAD`, `A-B` or `A B`
+travels that line perfectly intact — `export` is what refuses it, with `sh: export: 1BAD:
+bad variable name`, killing the credential prologue and therefore *every* process ever
+started in that sandbox, long after a creation that looked fine. Validate the portable
+grammar `[A-Za-z_][A-Za-z0-9_]*` at creation. The general shape of the mistake: checking
+only what would break the transport, when the receiver is what actually constrains the
+value.
+
+Both refusals happen after the workspace has been looked for, so both go through the
+unwind — which means a refusal must not take a *resuming* agent's workspace with it. That
+pair (unwinds the workspace it created, keeps the one it didn't) is tested for both.
+
 ## Every pipe of a subprocess needs an `error` listener
 
 A stream reports its own failure by emitting `error`, and an `error` with nothing listening

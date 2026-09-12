@@ -476,6 +476,156 @@ describe('the failure modes are defined', () => {
   });
 });
 
+describe('the record is caller data, and cannot become the runtime’s instructions', () => {
+  // Not a secret, but shaped like one: these tests care about what an error message says,
+  // and the rule that a message names the credential and never the value is one of them.
+  const SECRET = 'sentinel-b81d0f42-not-a-real-key';
+
+  function holding(value = SECRET) {
+    return driver({
+      env: { ...process.env, JEN_TEST_TOKEN: value },
+      resolve: resolveFromEnvironment({ ...process.env, JEN_TEST_TOKEN: value }),
+    });
+  }
+
+  it('refuses an environment the runtime would read as an option', async () => {
+    // `--help` is the one that shows the shape of the failure rather than the worst of it:
+    // the runtime consumes it, prints usage, and **exits zero** without creating anything,
+    // so a driver checking only for a non-zero exit reads that as a successful creation and
+    // returns a handle to a container that was never made. `--privileged` is the one that
+    // costs something — it is the isolation this primitive exists to provide, given away by
+    // a record rather than by any code here.
+    const subject = driver();
+    const before = await outstanding();
+
+    for (const hostile of ['--help', '--privileged', '-v/:/host', '']) {
+      const agent = record({ environment: hostile });
+      const failure = await subject.create(agent).catch((error: unknown) => error);
+
+      expect(failure).toBeInstanceOf(SandboxError);
+      expect((failure as SandboxError).message).toContain('sandbox image');
+
+      expect(await lines('ps', '-a', '--filter', `label=jen.agent=${agent.id}`, '--format', '{{.Names}}')).toEqual([]);
+      expect(await lines('volume', 'ls', '--filter', `label=jen.agent=${agent.id}`, '--format', '{{.Name}}')).toEqual(
+        [],
+      );
+    }
+
+    // Counted as well as filtered: a container the runtime made from a hostile record would
+    // not be carrying this agent's label to be found by, since the label is an option too.
+    expect(await outstanding()).toEqual(before);
+  });
+
+  it('hands the image over where the runtime cannot read it as an option', async () => {
+    // The refusal above is one half of this, and it is the half that depends on knowing
+    // which values are dangerous. This is the other: the image goes after `--`, so option
+    // parsing has ended before the runtime reaches caller data at all, whatever it says.
+    //
+    // Both are kept because they fail differently. The refusal is a property of this module
+    // and holds against any runtime; the terminator is a property of *this* runtime's
+    // argument parser, and the driver is meant to run against another one that nothing here
+    // tests. Verified against this runtime while writing it: `run … -- --privileged` exits
+    // 125 with `invalid reference format` and creates nothing, where the same value without
+    // the terminator is parsed as the flag.
+    const argvs: string[][] = [];
+    const recording: Spawner = (command, args, env, input) => {
+      argvs.push([command, ...args]);
+      return spawner(command, args, env, input);
+    };
+
+    const subject = driver({ spawn: recording });
+    const agent = record();
+    const sandbox = await subject.create(agent);
+
+    const creation = argvs.find((argv) => argv.includes('run')) ?? [];
+    const terminator = creation.indexOf('--');
+    expect(terminator).toBeGreaterThan(0);
+    // The image is *immediately* after it and appears nowhere before it, which is what makes
+    // the terminator's position mean something rather than it merely being present somewhere
+    // in the list. Everything option-shaped left behind the terminator is this module's own
+    // — the idle command after it carries a `-c` of its own, and that is the point: past the
+    // terminator, option-shaped is just text.
+    expect(creation[terminator + 1]).toBe(IMAGE);
+    expect(creation.indexOf(IMAGE)).toBe(terminator + 1);
+    expect(creation.slice(terminator + 1)).toEqual([IMAGE, 'sh', '-c', expect.stringContaining('sleep')]);
+
+    await sandbox.destroy();
+    await subject.releaseWorkspace(agent.id);
+  });
+
+  it('refuses a credential name the delivery shell cannot export, and unwinds what it made', async () => {
+    // These names are not a protocol problem: the block carries `1BAD=value` on one line
+    // perfectly well and the receiving shell reads it. `export` is what refuses it — `sh:
+    // export: 1BAD: bad variable name` — which kills the prologue, and therefore every
+    // process ever started in this sandbox, while creation itself looked fine. Creation is
+    // where it has to fail, because by the time it surfaces otherwise nothing points back
+    // at the record that caused it.
+    const subject = holding();
+
+    for (const name of ['1BAD', 'A-B', 'A B', '']) {
+      const agent = record({ credentials: [{ name, ref: 'env:JEN_TEST_TOKEN' }] });
+      const failure = await subject.create(agent).catch((error: unknown) => error);
+
+      expect(failure).toBeInstanceOf(SandboxError);
+      expect((failure as SandboxError).message).toContain('variable name');
+      expect((failure as SandboxError).message).not.toContain(SECRET);
+
+      // Including the workspace, which this call is the one that created.
+      expect(await lines('volume', 'ls', '--filter', `label=jen.agent=${agent.id}`, '--format', '{{.Name}}')).toEqual(
+        [],
+      );
+      expect(await lines('ps', '-a', '--filter', `label=jen.agent=${agent.id}`, '--format', '{{.Names}}')).toEqual([]);
+    }
+  });
+
+  it('accepts every name that shell can export, at the edges of the grammar', async () => {
+    // The other direction, and the reason it is worth a test of its own: a refusal narrowed
+    // past what `sh` actually accepts would fail closed, which is safe and silent, and the
+    // credential it started rejecting would look like a configuration mistake rather than a
+    // regression here. A leading underscore and a trailing digit are the two edges.
+    const subject = holding();
+    const agent = record({
+      credentials: [
+        { name: '_LEADING_UNDERSCORE', ref: 'env:JEN_TEST_TOKEN' },
+        { name: 'TRAILING_9', ref: 'env:JEN_TEST_TOKEN' },
+      ],
+    });
+    const sandbox = await subject.create(agent);
+
+    expect(await inside(sandbox, ['sh', '-c', 'printf %s "$_LEADING_UNDERSCORE/$TRAILING_9"'])).toMatchObject({
+      out: `${SECRET}/${SECRET}`,
+      code: 0,
+    });
+
+    await sandbox.destroy();
+    await subject.releaseWorkspace(agent.id);
+  });
+
+  it('keeps a workspace it did not create when a record is refused', async () => {
+    // The direction a refusal can still get wrong. Refusing is the good outcome; refusing in
+    // a way that takes a resuming agent's work with it is not, and since both refusals now
+    // happen after the workspace has been looked for, the unwind is the only thing between
+    // the two.
+    const subject = holding();
+    const agent = record();
+
+    const first = await subject.create(agent);
+    expect((await inside(first, ['sh', '-c', 'echo earlier > /workspace/work'])).code).toBe(0);
+    await first.destroy();
+
+    await expect(
+      subject.create({ ...agent, credentials: [{ name: '1BAD', ref: 'env:JEN_TEST_TOKEN' }] }),
+    ).rejects.toBeInstanceOf(SandboxError);
+    await expect(subject.create({ ...agent, environment: '--privileged' })).rejects.toBeInstanceOf(SandboxError);
+
+    const resumed = await subject.create(agent);
+    expect(await inside(resumed, ['cat', '/workspace/work'])).toMatchObject({ out: 'earlier', code: 0 });
+
+    await resumed.destroy();
+    await subject.releaseWorkspace(agent.id);
+  });
+});
+
 describe('repetition accumulates nothing', () => {
   // Thirty, because a leak of one resource per cycle is unmistakable by then and the run
   // still finishes in a minute or so. The assertions are against counts taken before and

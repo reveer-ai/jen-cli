@@ -91,6 +91,23 @@ Creation still resolves the references, so a credential that cannot be resolved 
 
 **The second cost, found in review: a pipe can break, and an unattended break is fatal.** If nothing is left reading — `docker exec` refused, or the container gone between the call and the runtime's attempt at it — the write ends in `EPIPE`, which the stream emits as an `error` event. An `error` with no listener is not dropped; Node raises it as an uncaught exception, and the process it kills is the supervisor, so one agent's broken pipe would end every other agent's run with it. The listener for it goes on the stdin stream, not on the child: the child's own `error` covers a failure to spawn and nothing after. A broken pipe then surfaces through `exit` — as the subprocess's own failing exit where it has one, since its stderr accounts for the failure better than the pipe does, and as a rejection where the subprocess exited *zero*, because a command that ran without the credentials it was sent looks exactly like one that had them.
 
+**The third cost, found in the review after that one: the receiver constrains the name more tightly than the protocol does.** The line carries `NAME=value`, so the protocol's own objections are an empty name, a newline and an `=`. The shell that reads the line refuses more than that — `1BAD`, `A-B` and `A B` all arrive intact and die in `export` with `bad variable name`. Left to creation's discretion that is the worst shape a failure can take here: creation succeeds, and every process ever started in that sandbox fails in the prologue, at a point that no longer points back at the record responsible. So the portable grammar `[A-Za-z_][A-Za-z0-9_]*` is checked at creation. The general lesson, and the one worth carrying to whatever replaces this encoding: **validate what the receiver accepts, not what the transport can carry.**
+
+### The record is caller data, and the runtime's argument list has an option-parsing position
+
+The record's fields are interpolated into command lines, and one of them lands somewhere that reads them as instructions rather than as values.
+
+`docker run [OPTIONS] IMAGE …` parses options until the first operand, and `record.environment` was appended in exactly that position. An environment of `--help` is therefore consumed as a flag — which **exits zero and creates nothing**, so a creation checking only for a non-zero exit accepts it and returns a handle to a container that was never made. `--privileged` in the same position gives away the isolation this primitive exists to provide, from a record rather than from any code here.
+
+Two things hold it, kept together because they fail differently:
+
+- **`--` before the image.** Option parsing ends there and the next token is read as an image reference however it is spelled. This is the structural fix, and it is a property of *this* runtime's argument parser.
+- **A refusal of an empty environment, or one starting with `-`.** This is a property of the module, holds against a runtime whose parser differs — which nothing here tests, and which the driver is meant to work against — and names the cause for the caller.
+
+**Rejected:** validating the environment as an image reference. What a reference may look like belongs to the runtime and to whatever registry it talks to, and a driver deciding it here would start refusing things the runtime accepts. The narrow property is the whole of what is wrong: a leading `-` is never a legitimate reference, and it is exactly what makes a token an option.
+
+Nothing else in the record reaches an operand position. The other interpolated fields are arguments to a flag (`--workdir`, `--volume`, `--name`), where the parser has already consumed the flag and takes the next token as its value whatever it says.
+
 ### Destruction is explicit, not `--rm`
 
 `destroy` runs `docker rm -f` rather than creation passing `--rm` and relying on exit.

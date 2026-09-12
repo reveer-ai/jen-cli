@@ -159,6 +159,7 @@ The sandbox SHALL define its behaviour for the failures that arise from its own 
 - **Destroying something already gone.** Destruction of a sandbox that no longer exists SHALL succeed rather than fail. A sweep and an ordinary teardown can both reach the same sandbox, and a teardown path that fails on an absent target turns cleanup into a source of errors.
 - **Destroying something still running.** Destruction of a sandbox whose process is still running SHALL stop it and release its resources rather than waiting for it or refusing.
 - **A container runtime that is absent or unreachable.** Creation SHALL fail with an error naming the cause. It SHALL NOT degrade to a less isolated arrangement, now or when a second driver exists. A run that quietly loses its isolation is indistinguishable from one that kept it, which makes silent degradation worse than failure.
+- **A record the sandbox cannot use.** A record naming an environment that cannot be provisioned, or a credential that cannot be delivered as named, SHALL fail the creation it belongs to. The failure SHALL NOT be deferred to the processes started later in that sandbox, and an error concerning a credential SHALL name the credential and never its value. Deferring it produces a sandbox that was created successfully and in which nothing can ever run, reported at a place that no longer points back at the record that caused it. A record is data supplied by the caller, so its fields SHALL be treated as values wherever the driver passes them onward, and never as instructions to the thing it passes them to.
 
 #### Scenario: A half-created sandbox is cleaned up
 
@@ -182,6 +183,13 @@ The sandbox SHALL define its behaviour for the failures that arise from its own 
 - **WHEN** a sandbox is created and no container runtime is reachable
 - **THEN** creation fails with an error naming the cause
 - **AND** no less isolated arrangement is substituted
+
+#### Scenario: An unusable record fails creation rather than the processes after it
+
+- **WHEN** a sandbox is created from a record naming an environment that cannot be provisioned, or a credential that cannot be delivered as named
+- **THEN** creation fails with an error naming what about the record could not be used
+- **AND** no sandbox handle is returned
+- **AND** nothing that creation provisioned before the failure survives
 
 ### Requirement: Sandboxes have unrestricted network access
 

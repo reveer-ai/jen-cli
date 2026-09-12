@@ -79,6 +79,22 @@ const IDLE = ['sh', '-c', 'while :; do sleep 3600; done'];
  */
 const DELIVER = 'while IFS= read -r line; do [ -z "$line" ] && break; export "$line"; done; exec "$@"';
 
+/**
+ * What a name has to look like for {@link DELIVER} to be able to export it.
+ *
+ * The portable shell grammar, and it is narrower than the characters a line of the block
+ * could physically carry — which is the distinction that was missed. Excluding only what
+ * breaks the *protocol* (an empty name, a newline, an `=`) lets through names the *shell*
+ * refuses: `1BAD`, `A-B` and `A B` all reach the container intact and die there with
+ * `export: bad variable name`. Checked against the shell this delivers to rather than
+ * reasoned about.
+ *
+ * Enforced at creation, because the alternative is a creation that succeeds and every
+ * process started in it failing afterwards in the credential prologue — a protocol error
+ * deferred to a place it cannot be understood from.
+ */
+const VARIABLE_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
 /** A started subprocess: its output as it is produced, and its ending. */
 export interface Started {
   stdout: Readable;
@@ -248,7 +264,14 @@ export class DockerSandboxDriver implements SandboxDriver {
       //
       // No network flag either: the sandbox takes the runtime's default, which is
       // unrestricted and is no code at all. There is no policy to configure.
-      args.push(record.environment, ...IDLE);
+      //
+      // **Everything from here is an operand, never an option**, and the two things holding
+      // that are doing different jobs. The terminator is what the runtime enforces: after
+      // `--` the next token is read as the image however it is spelled. {@link operand} is
+      // what holds where the terminator does not — that `--` ends option parsing is a fact
+      // about *this* runtime's argument parser, and the driver is meant to run against
+      // another one that nothing here tests.
+      args.push('--', operand(record.environment), ...IDLE);
 
       await this.#must(args, `creating a sandbox for ${record.id}`);
     } catch (error) {
@@ -266,15 +289,16 @@ export class DockerSandboxDriver implements SandboxDriver {
    * creation it belongs to, and unwinds with it, rather than surfacing later as a process
    * mysteriously missing a variable.
    *
-   * The two refusals are the line protocol's, and they are refusals rather than escapes on
-   * purpose: a truncated secret is worse than a failed creation, because it arrives looking
-   * like a secret. Both name the credential and never the value — an error message is the
-   * one place a secret escapes to a log without anybody meaning it to.
+   * The two refusals are the delivery's — {@link VARIABLE_NAME} for the name, the line
+   * protocol for the value — and they are refusals rather than escapes on purpose: a
+   * truncated secret is worse than a failed creation, because it arrives looking like a
+   * secret. Both name the credential and never the value — an error message is the one place
+   * a secret escapes to a log without anybody meaning it to.
    */
   async #deliverable(credentials: readonly CredentialReference[]): Promise<string> {
     let block = '';
     for (const credential of credentials) {
-      if (credential.name === '' || /[\n\r=]/.test(credential.name)) {
+      if (!VARIABLE_NAME.test(credential.name)) {
         throw new SandboxError(`the credential \`${credential.name}\` is not a usable variable name.`);
       }
       const value = await this.#resolve(credential);
@@ -423,6 +447,31 @@ export class DockerSandboxDriver implements SandboxDriver {
       cause: error,
     });
   }
+}
+
+/**
+ * The record's environment, confirmed to be something a runtime reads as its image rather
+ * than as an option.
+ *
+ * The hazard is worth stating plainly, because the argument list above looks safe and is
+ * not: caller data sitting in the runtime's option-parsing position is parsed as options.
+ * On this runtime an environment of `--help` is consumed as the help flag, which *exits
+ * zero* and creates nothing — so creation would succeed and hand back a sandbox with no
+ * container behind it. The same position takes `--privileged`, which would give away the
+ * isolation this primitive exists to provide, and it would be given away by a record rather
+ * than by any code here.
+ *
+ * Deliberately not an image-reference grammar. What a reference may look like belongs to
+ * the runtime and to whatever registry it talks to, and a driver deciding it here would
+ * start refusing things the runtime accepts. The narrow property is the whole of what is
+ * wrong: a leading `-` is never a legitimate reference, and it is exactly what makes a
+ * token an option.
+ */
+function operand(environment: string): string {
+  if (environment === '' || environment.startsWith('-')) {
+    throw new SandboxError(`the environment \`${environment}\` cannot be read as a sandbox image.`);
+  }
+  return environment;
 }
 
 /** The agent's workspace. Keyed by the agent, because it outlives any one sandbox. */
