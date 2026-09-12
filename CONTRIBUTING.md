@@ -24,6 +24,21 @@ npm run build && npm run typecheck && npm test
 
 CI runs the same three on every pull request, on the minimum Node version `engines.node` allows.
 
+**None of them reach `agent/`.** The agent substrate is deliberately outside the build, the checks, and the tarball — see below.
+
+## The agent substrate
+
+`agent/` holds the substrate: a ground-up redesign of how work gets coordinated, built while its shape is still unsettled. It is not part of the CLI, does not import it and is not imported by it, and has checks of its own:
+
+```bash
+npx tsc -p agent/tsconfig.json
+npx vitest run --config agent/vitest.config.ts
+```
+
+It is kept outside `npm run build`, `npm run typecheck`, `npm test`, CI, and `files` on purpose: wiring an unfinished experiment into the checks that gate every pull request would make it a condition of merging unrelated work. The cost is that **nothing automated covers it** — a green pull request says nothing at all about `agent/`, so the two commands above are run by hand by anyone changing it, before merging. Its sandbox tests need a running container runtime, and its configuration is its own rather than an extension of the repository's.
+
+That arrangement is temporary, and the condition for ending it is definite: when something depends on the substrate, or when it is to be published, it gets wired into the checks in the same change that makes either true. [`agent/AGENTS.md`](agent/AGENTS.md) has the rest.
+
 ## Packaging
 
 `npm pack` compiles the CLI to `dist/` and stages the payload into `dist/templates/` — the seven skills, stamped, plus the workflow document and the once-only scaffold `jen init` writes. `files: ["dist"]` ships that and nothing else, though the registry adds `package.json`, `README.md`, and `LICENSE` to every tarball regardless.
