@@ -4,14 +4,7 @@ ENG-194's substrate needs one primitive before anything else in it can exist: cr
 isolated environment for a single agent, and destroy it. The supervisor calls it; an agent
 never does.
 
-Nothing in jen does this today. [`cli/exec.ts`](../../../cli/exec.ts) provisions a working
-copy per run — a temp directory, a clone, credentials in a child's environment — and it is
-the closest thing in the repository, but it is not this. Its directory is a path on the host
-rather than an isolation boundary, its credentials sit in a file the run deletes afterwards
-rather than dying with a container, and it runs once per stage session. The sandbox runs
-**many times per agent**: a container exits every time its agent suspends on `await`
-(ENG-213), so create/destroy is a hot path, and leak-freeness matters in a way it never did
-for a once-per-run temp directory.
+A sandbox is created and destroyed on **every suspension**, for every agent — a container exits each time its agent goes dormant (ENG-213) — so this is a hot path rather than a once-per-agent operation. That is what makes boot cost and leak-freeness central here rather than incidental: a resource leaked once is leaked on a schedule.
 
 ENG-196 is also the first code under `agent/`, so it is the change that stands that
 directory up.
@@ -30,14 +23,14 @@ directory up.
   `typescript` and `vitest` in the root `node_modules` and inherits `"type": "module"`, and
   the Docker driver below takes no dependency that would require one. No new build output,
   so no new ignore rule.
-- **The sandbox interface: four operations.** Root a filesystem, exec a process, configure
-  network, inject secrets — plus create and destroy. Narrow on purpose, so a hosted tier can
+- **The sandbox interface, kept to what is needed.** Creation — which roots a filesystem and
+  delivers the agent's secrets — process execution, destruction, and release of the agent's
+  workspace. Narrow on purpose, so a hosted tier can
   later put gVisor or Firecracker behind it. It is not a plugin system: the driver set is
   closed in source, with no registry, no dynamic loading, and no configuration naming an
   implementation to load.
 - **A Docker driver**, which issues container lifecycle commands by running the `docker`
-  binary as a subprocess — the pattern [`cli/exec.ts`](../../../cli/exec.ts) already uses
-  throughout. No client library, and therefore no dependency. It is the only driver, and it
+  binary as a subprocess. No client library, and therefore no dependency. It is the only driver, and it
   is what isolation means here: no host directory mounted in, the container socket never
   mounted in,
   credentials arriving as environment so they die with the container rather than needing
@@ -65,14 +58,18 @@ directory up.
   fails and names the cause. It does not fall back to anything less isolated — not now, and
   not when a second driver exists. A run that quietly loses its isolation is
   indistinguishable from one that kept it.
-- **Network is unrestricted.** The operation exists on the interface so a policy can be
-  applied later without reshaping anything; no allowlist is built or enforced. The condition
-  for revisiting is egress on shared infrastructure, and it is recorded rather than left
-  implicit.
+- **Network is unrestricted, and carries no configuration surface.** No allowlist is built,
+  and no operation for configuring one is added while there is no policy to configure — an
+  operation that does nothing is dead code, and the shape a policy needs is better derived
+  from the policy than guessed at now. The condition for revisiting is egress on shared
+  infrastructure, and it is recorded rather than left implicit.
 - **Not in scope, and named so it is not mistaken for an oversight:** no CI check covers
   `agent/`. Nothing automated will catch a regression there until someone runs its tests by
   hand. This is a deliberate consequence of keeping the substrate unwired while its shape is
   still being found, and `design.md` carries the condition for reversing it.
+  **This is about where tests run, not whether they exist.** Everything implemented is
+  tested, in the same change that implements it, to the standard that would be expected if
+  CI were watching. What is absent is the automation that would run them unprompted.
 
 ## Capabilities
 
@@ -92,7 +89,7 @@ eventually meant to supersede.
   boundary.
 - `agent-sandbox`: the sandbox primitive — its four operations, the single container driver
   and the closed driver set, the isolation it guarantees, the ephemeral-container/durable-workspace
-  lifetime, leak-freeness under repetition, and the failure modes (creation that fails
+  lifetime, unrestricted network, leak-freeness under repetition, and the failure modes (creation that fails
   halfway, destruction of something already gone, destruction of something still running, a
   runtime that is unreachable).
 

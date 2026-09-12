@@ -20,18 +20,18 @@ Creation SHALL take the agent's record and yield a handle through which the sand
 - **THEN** the environment no longer exists
 - **AND** everything it held is released
 
-### Requirement: The sandbox interface is four operations and names nothing driver-specific
+### Requirement: The interface is small and names nothing driver-specific
 
-The sandbox interface SHALL consist of exactly four operations: root a filesystem, execute a process, configure network, and inject secrets — alongside creation and destruction.
+The sandbox interface SHALL consist of creation — which roots a filesystem for the agent and delivers its secrets — process execution, destruction, and release of the agent's workspace. Rooting a filesystem and injecting secrets are properties of creation rather than operations a caller invokes separately; there is nothing useful a caller could do with a sandbox that had neither.
 
 No type, field, parameter or return value on the interface SHALL name a concept belonging to one driver's implementation. A container identifier, an image reference, a daemon socket, a process identifier, or a host filesystem path SHALL NOT appear on it.
 
 This requirement carries more weight than it would if several drivers existed. A container driver is the only implementation at this stage, so nothing else exercises the interface and nothing else can reveal an assumption that leaked into it. The interface's independence is therefore held by this requirement alone, and it SHALL be checkable by reading the interface's declarations rather than inferred from the implementation's behaviour.
 
-#### Scenario: The interface exposes four operations
+#### Scenario: The interface exposes only what it needs
 
 - **WHEN** the sandbox interface is examined
-- **THEN** it declares exactly the four operations, plus creation and destruction
+- **THEN** it declares creation, process execution, destruction, and workspace release, and nothing further
 
 #### Scenario: No driver concept leaks onto the interface
 
@@ -183,20 +183,18 @@ The sandbox SHALL define its behaviour for the failures that arise from its own 
 - **THEN** creation fails with an error naming the cause
 - **AND** no less isolated arrangement is substituted
 
-### Requirement: Network configuration is an operation, and is unrestricted
+### Requirement: Sandboxes have unrestricted network access
 
-Configuring a sandbox's network SHALL be an operation on the interface. No egress restriction, allowlist, or filtering SHALL be implemented at this stage: a sandbox has unrestricted network access.
+A sandbox SHALL have unrestricted network access. No egress restriction, allowlist, or filtering SHALL be implemented, and no operation for configuring one SHALL be added to the interface while there is no policy to configure.
 
-The operation exists so that a policy can be applied later without reshaping the interface. Maintaining an allowlist is friction on every package install, every git remote, and every model endpoint while the substrate's fundamentals are still being found, and the isolation that matters here is of the filesystem and of credentials.
-
-The condition for revisiting SHALL be recorded rather than left implicit: restriction concerns egress, not ingress, because an agent holds credentials. That risk is acceptable while the substrate runs on its operator's own machine with its operator's own keys, and unacceptable once it executes anyone else's work on shared infrastructure.
-
-#### Scenario: The operation exists
-
-- **WHEN** the sandbox interface is examined
-- **THEN** configuring the network is one of its operations
+Recorded because it is a security property rather than an omission, and because the condition for changing it is specific: restriction concerns egress, not ingress, since an agent holds credentials. That is acceptable while the substrate runs on its operator's own machine with its operator's own keys, and unacceptable once it executes anyone else's work on shared infrastructure. Adding policy then is a change to this capability, and the interface gains whatever shape that policy actually needs rather than a parameter guessed at in advance.
 
 #### Scenario: Network access is unrestricted
 
 - **WHEN** a sandbox is created
 - **THEN** no egress allowlist or filter is applied to it
+
+#### Scenario: No configuration surface is carried for a policy that does not exist
+
+- **WHEN** the sandbox interface is examined
+- **THEN** it declares no network configuration operation

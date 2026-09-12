@@ -31,6 +31,8 @@ The substrate SHALL NOT be compiled by the repository's build command, typecheck
 
 This is deliberate and it is temporary. The substrate is being designed while its shape is still unsettled, and wiring it into the checks that gate every pull request would make an unfinished experiment a condition of merging unrelated work.
 
+This concerns where the substrate's tests are *executed*, never whether they exist. The substrate SHALL be tested as thoroughly as code that CI does run — behaviour implemented without tests is not made acceptable by the absence of a check that would have reported it.
+
 The cost SHALL be recorded rather than left to be discovered: **no automated check covers `agent/`**, so nothing catches a regression there until a person runs its tests by hand. The condition for reversing this is that the substrate stops being an experiment — when something depends on it, or when it is to be published, it SHALL be wired into the repository's checks in the same change that makes either true.
 
 #### Scenario: The repository's build ignores the substrate
@@ -44,6 +46,12 @@ The cost SHALL be recorded rather than left to be discovered: **no automated che
 - **WHEN** the package is packed and the tarball's entries are listed
 - **THEN** no path under `agent/` appears
 - **AND** the manifest's `files` field is unchanged
+
+#### Scenario: The substrate is tested regardless
+
+- **WHEN** behaviour is added to the substrate
+- **THEN** tests covering it are added in the same change
+- **AND** they are runnable by the substrate's own test command
 
 #### Scenario: CI does not run the substrate's tests
 
@@ -78,7 +86,7 @@ A configuration of the substrate's own is what makes the strictness real. Withou
 
 The substrate SHALL NOT introduce a package manifest of its own, and SHALL NOT add a dependency to the repository's. It SHALL use the tooling the repository already carries.
 
-A manifest is warranted by a dependency and by nothing else. The substrate has none: its sandbox driver reaches the container runtime by running its command-line client as a subprocess rather than through a client library, which is also the pattern the CLI already uses for every child process it starts.
+A manifest is warranted by a dependency and by nothing else. The substrate has none: its sandbox driver reaches the container runtime by running its command-line client as a subprocess rather than through a client library.
 
 If the substrate later requires a dependency the repository does not carry, or is to be published separately, it SHALL gain its own manifest in the change that makes either true.
 
