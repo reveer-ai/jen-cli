@@ -234,10 +234,12 @@ export class DockerSandboxDriver implements SandboxDriver {
     const name = `${SANDBOX_PREFIX}-${slug(record.id)}-${randomBytes(4).toString('hex')}`;
     let mine = false;
     let credentials = '';
+    let rooted = '';
 
     try {
       mine = await this.#ensureWorkspace(workspace, record.id);
       credentials = await this.#deliverable(record.credentials);
+      rooted = containerPath(record.workspace);
 
       const args = [
         'run',
@@ -252,10 +254,15 @@ export class DockerSandboxDriver implements SandboxDriver {
         // is mounted in, and the runtime's own socket never is — that one is not one
         // measure among several, since mounting it grants trivial root outside the sandbox
         // and would make every other guarantee here decorative.
+        //
+        // This argument is *composed* from caller data rather than handed it whole, which
+        // is what {@link containerPath} is for: the two sides are joined by a `:`, and a
+        // `:` arriving from the record would move the join. Both positions take the
+        // checked value, because the guarantee is that they name the same one place.
         '--volume',
-        `${workspace}:${record.workspace}`,
+        `${workspace}:${rooted}`,
         '--workdir',
-        record.workspace,
+        rooted,
       ];
 
       // Nothing of the credentials is passed here — not in an argument, and not in the
@@ -279,7 +286,7 @@ export class DockerSandboxDriver implements SandboxDriver {
       throw error;
     }
 
-    return this.#sandbox(name, record.workspace, credentials);
+    return this.#sandbox(name, rooted, credentials);
   }
 
   /**
@@ -472,6 +479,42 @@ function operand(environment: string): string {
     throw new SandboxError(`the environment \`${environment}\` cannot be read as a sandbox image.`);
   }
   return environment;
+}
+
+/**
+ * The record's workspace, confirmed to be one path inside a sandbox that the arguments
+ * carrying it cannot split into something else.
+ *
+ * The hazard is the same one {@link operand} answers, in its quieter form. The volume
+ * argument is *composed* — `source:destination[:options]`, joined by this module — so a
+ * record whose workspace is `/workspace:ro` does not name a path with a colon in it. It
+ * moves the join: the runtime mounts at `/workspace`, reads `ro` as a mount option, and
+ * exits **zero**. `--workdir` is a separate argument and is handed the string whole, so it
+ * still names `/workspace:ro` — a directory that does not exist yet, which the runtime
+ * creates in the container's writable layer. Creation succeeds, every process starts in a
+ * directory that looks right, and the agent's work is written outside its own volume and
+ * discarded with the container. Reproduced on this runtime before this check was written.
+ *
+ * **What is checked is the value, not the flag**, because the value reaches three positions
+ * with three different syntaxes — the composed volume argument, `--workdir`, and the default
+ * `cwd` of every `exec` — and the property needed is that all three name the same one place.
+ * Switching the mount to the `type=volume,dst=…` spelling was the alternative considered and
+ * it does preserve a colon; it reads `,` as a delimiter of its own instead, so it relocates
+ * the hazard rather than removing it, and it would newly refuse `/a,b`, which the composed
+ * form carries intact. A flag can only ever fix its own argument.
+ *
+ * The two conditions are the whole of it. A colon is the delimiter. Absolute is what makes
+ * one path name one place at all, and it is required of a mount destination by the runtime
+ * anyway — kept here so the failure names the record's field rather than arriving as a parse
+ * error about an argument the caller never wrote. Nothing else is decided here: `..` and
+ * repeated separators are normalised by the runtime, and it applies the same normalisation
+ * to both positions, so they continue to agree.
+ */
+function containerPath(workspace: string): string {
+  if (!workspace.startsWith('/') || workspace.includes(':')) {
+    throw new SandboxError(`the workspace \`${workspace}\` is not a usable path inside a sandbox.`);
+  }
+  return workspace;
 }
 
 /** The agent's workspace. Keyed by the agent, because it outlives any one sandbox. */

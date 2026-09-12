@@ -176,6 +176,39 @@ describe('the workspace outlives the sandbox', () => {
     await subject.releaseWorkspace(agent.id);
     expect((await ask('volume', 'inspect', workspace ?? '')).code).not.toBe(0);
   });
+
+  it('keeps what a process writes where it starts, without being told where that is', async () => {
+    // The test above writes to `/workspace` by name, which asks whether the mount persists.
+    // This one never names it: the file is written at whatever the process's own working
+    // directory turns out to be, which is the question of whether the *mount* and the
+    // *working directory* are one place or two.
+    //
+    // They can be two. A workspace carrying the volume argument's own `:` delimiter mounts
+    // at one path and sets the working directory to another — creation succeeds, `pwd` looks
+    // right, and the writes land in the container's writable layer and are discarded with it.
+    //
+    // **This test does not catch that, and cannot.** Once the value is refused at creation
+    // there is no record left that produces the divergence, so removing the refusal leaves
+    // this test green; the refusal's own test is what fails. Worth saying rather than
+    // leaving to be assumed, because a passing test here reads like coverage of the bug and
+    // is not. What it does is state the property in behaviour — the place a process starts
+    // is the place that persists — which is what a future change to either argument, or to
+    // the default `cwd`, has to keep true.
+    const subject = driver();
+    const agent = record();
+
+    const first = await subject.create(agent);
+    expect((await inside(first, ['sh', '-c', 'echo relative > ./note'])).code).toBe(0);
+    await first.destroy();
+
+    // A fresh container: had the write landed in the writable layer rather than on the
+    // volume, this is where it would be gone.
+    const second = await subject.create(agent);
+    expect(await inside(second, ['cat', './note'])).toMatchObject({ out: 'relative', code: 0 });
+
+    await second.destroy();
+    await subject.releaseWorkspace(agent.id);
+  });
 });
 
 describe('a sandbox is isolated', () => {
@@ -553,6 +586,36 @@ describe('the record is caller data, and cannot become the runtime’s instructi
     await subject.releaseWorkspace(agent.id);
   });
 
+  it('refuses a workspace the volume argument would split into something else', async () => {
+    // Quieter than the environment case and worse in its consequences. `/workspace:ro` is
+    // not a path with a colon in it as far as the runtime is concerned — the volume argument
+    // is composed as `source:destination[:options]`, so the record's colon becomes the
+    // second join. The mount lands at `/workspace` read-only, `--workdir` is a separate
+    // argument and still names `/workspace:ro`, the runtime creates that directory in the
+    // writable layer, and creation **exits zero**. Nothing looks wrong from anywhere: `pwd`
+    // answers `/workspace:ro`, writes succeed, and the agent's work is gone at the next
+    // suspension. Reproduced on this runtime before the check was written.
+    const subject = driver();
+    const before = await outstanding();
+
+    // The delimiter in both of its shapes — one that adds an option, one that adds a second
+    // destination — and the two forms that are not one absolute path at all.
+    for (const hostile of ['/workspace:ro', '/workspace:/elsewhere', 'workspace', '']) {
+      const agent = record({ workspace: hostile });
+      const failure = await subject.create(agent).catch((error: unknown) => error);
+
+      expect(failure).toBeInstanceOf(SandboxError);
+      expect((failure as SandboxError).message).toContain('path inside a sandbox');
+
+      expect(await lines('ps', '-a', '--filter', `label=jen.agent=${agent.id}`, '--format', '{{.Names}}')).toEqual([]);
+      expect(await lines('volume', 'ls', '--filter', `label=jen.agent=${agent.id}`, '--format', '{{.Name}}')).toEqual(
+        [],
+      );
+    }
+
+    expect(await outstanding()).toEqual(before);
+  });
+
   it('refuses a credential name the delivery shell cannot export, and unwinds what it made', async () => {
     // These names are not a protocol problem: the block carries `1BAD=value` on one line
     // perfectly well and the receiving shell reads it. `export` is what refuses it — `sh:
@@ -617,6 +680,7 @@ describe('the record is caller data, and cannot become the runtime’s instructi
       subject.create({ ...agent, credentials: [{ name: '1BAD', ref: 'env:JEN_TEST_TOKEN' }] }),
     ).rejects.toBeInstanceOf(SandboxError);
     await expect(subject.create({ ...agent, environment: '--privileged' })).rejects.toBeInstanceOf(SandboxError);
+    await expect(subject.create({ ...agent, workspace: '/workspace:ro' })).rejects.toBeInstanceOf(SandboxError);
 
     const resumed = await subject.create(agent);
     expect(await inside(resumed, ['cat', '/workspace/work'])).toMatchObject({ out: 'earlier', code: 0 });

@@ -122,11 +122,19 @@ A sandbox SHALL exist only while its agent is actively working, and creation and
 
 The workspace SHALL outlive the sandbox that mounted it. It SHALL be destroyed with the agent, never with a single period of the agent's activity, so that a resumed agent finds its files as it left them.
 
+A process started in a sandbox without being told where to run SHALL start in that agent's workspace. The place a process starts and the place that persists SHALL be the same place: an agent writes without naming an absolute path, so a default location outside the workspace would let ordinary work be discarded at the next suspension while every observable sign — the location the process reports, the success of the write — looked correct.
+
 #### Scenario: A workspace survives its sandbox
 
 - **WHEN** a sandbox writes a file to its workspace and is then destroyed
 - **AND** a new sandbox is created for the same agent
 - **THEN** the file is present in the new sandbox's workspace
+
+#### Scenario: What a process writes where it starts is what survives
+
+- **WHEN** a process is started in a sandbox without being told where to run, and writes a file without naming an absolute path
+- **AND** the sandbox is destroyed and a new one is created for the same agent
+- **THEN** the file is present in the new sandbox
 
 #### Scenario: A workspace is released with its agent
 

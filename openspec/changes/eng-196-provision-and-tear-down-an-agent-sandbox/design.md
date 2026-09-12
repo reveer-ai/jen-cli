@@ -106,7 +106,19 @@ Two things hold it, kept together because they fail differently:
 
 **Rejected:** validating the environment as an image reference. What a reference may look like belongs to the runtime and to whatever registry it talks to, and a driver deciding it here would start refusing things the runtime accepts. The narrow property is the whole of what is wrong: a leading `-` is never a legitimate reference, and it is exactly what makes a token an option.
 
-Nothing else in the record reaches an operand position. The other interpolated fields are arguments to a flag (`--workdir`, `--volume`, `--name`), where the parser has already consumed the flag and takes the next token as its value whatever it says.
+Nothing else in the record reaches an operand position.
+
+**But "it is a flag's argument" was the wrong test, and this is the correction.** It held that `--workdir`, `--volume` and `--name` were all safe because the parser has consumed the flag and takes the next token whatever it says. That is true only where the value is handed over *whole*. It is false wherever the driver **composes** the argument, because the argument then has a syntax of its own and the caller's value sits inside it.
+
+`--volume` is the composed one: `source:destination[:options]`, joined by the driver with a `:`. So `record.workspace` of `/workspace:ro` does not name a path containing a colon — it moves the join. The volume mounts at `/workspace` read-only; `--workdir` is a separate argument, gets the string whole, and names `/workspace:ro`, which the runtime creates in the container's writable layer. **Creation exits zero.** Processes start somewhere that looks right, `pwd` agrees, writes succeed, and the agent's work sits outside its own volume and is discarded at the next suspension. Quieter than the `--help` case and worse: that one fails immediately.
+
+So the test to apply is **does the driver build this string, or hand the value over as one token?** — not whether a flag precedes it.
+
+**The check is on the value, not on the flag.** The workspace reaches three positions with three syntaxes — the composed mount argument, `--workdir`, and the default location of every `exec` — and what must hold is that all three name one place. One absolute path with no `:`.
+
+**Rejected:** `--mount type=volume,src=…,dst=…`. It does preserve a colon in the destination, so it fixes the reported case. It reads `,` as a delimiter of its own instead, which relocates the hazard rather than removing it and additionally refuses `/a,b`, a path the composed form carries intact. A flag can only ever fix its own argument, and two of the three positions are not this flag.
+
+The absolute half of the check is worth naming for what it is: the runtime already refuses a relative or empty destination loudly, so it buys a better error rather than a caught defect — one that names the record's field instead of an argument the caller never wrote. Normalisation (`..`, doubled separators) is deliberately left to the runtime, which applies the same normalisation to the mount destination and the working directory, so those two continue to agree.
 
 ### Destruction is explicit, not `--rm`
 

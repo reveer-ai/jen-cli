@@ -76,11 +76,11 @@ ever has to be carried — a PEM key is the obvious candidate — the change is 
 encoding, and whatever replaces it has to keep the same property: nothing on a command
 line, nothing the runtime writes down.
 
-## A record's fields are caller data, and two places take them literally
+## A record's fields are caller data, and three places took them literally
 
-`AgentRecord` is data the supervisor hands over. Two of its fields used to be passed
-straight through into places that read them as instructions rather than as values, and both
-were invisible because the call sites looked like ordinary string interpolation.
+`AgentRecord` is data the supervisor hands over. Three of its fields used to be passed
+straight through into places that read them as instructions rather than as values, and all
+three were invisible because the call sites looked like ordinary string interpolation.
 
 **The runtime's argument list has an option-parsing position, and `record.environment` sat
 in it.** `docker run [OPTIONS] IMAGE …` parses options until the first operand, so an
@@ -102,9 +102,41 @@ Two things hold it now, and they are kept together because they fail differently
   look like belongs to the runtime and its registry, and deciding it here would start
   refusing things the runtime accepts.
 
-Any other caller value that ends up in operand position needs the same treatment. Values
-passed as a *flag's argument* (`--workdir`, `--volume`, `--name`) are already safe — the
-parser has consumed the flag and takes the next token as its value.
+Any other caller value that ends up in operand position needs the same treatment.
+
+**A flag's argument is not automatically safe, and the distinction is the one this note
+originally got wrong.** It used to say that `--workdir`, `--volume` and `--name` were all
+fine because the parser has consumed the flag and takes the next token whatever it says.
+That is true only of a value handed over *whole*. It is false the moment this module
+**composes** the argument, because then the argument has a syntax of its own and the
+caller's value is inside it.
+
+`--volume` is the composed one: `source:destination[:options]`, joined here by a `:`. A
+workspace of `/workspace:ro` is therefore not a path containing a colon — it moves the join.
+The volume lands at `/workspace` read-only, while `--workdir` is a *separate* argument that
+still gets the string whole and names `/workspace:ro`, a directory the runtime then creates
+in the container's writable layer. Creation **exits zero**. Every process starts somewhere
+that looks right, `pwd` agrees, writes succeed — and the agent's work is outside its volume
+and discarded at the next suspension, silently. That is worse than the `--help` case, which
+at least fails immediately.
+
+So the test to apply is not "is this a flag argument" but **"does this module build the
+string, or hand the value over as one token?"** `--name` and `--workdir` hand it over whole;
+`--volume` builds it.
+
+The check is on the *value*, not on the flag, because the workspace reaches three positions
+with three syntaxes — the composed volume argument, `--workdir`, and the default `cwd` of
+every `exec` — and what has to hold is that all three name the same one place. Switching the
+mount to `--mount type=volume,dst=…` was considered: it does preserve a colon, but it reads
+`,` as a delimiter of its own, so it relocates the hazard and additionally refuses `/a,b`,
+which the composed form carries fine. A flag can only ever fix its own argument.
+
+Absolute-and-no-colon is the whole of the check. The runtime already refuses a relative or
+empty destination loudly (`the working directory 'workspace' is invalid, it needs to be an
+absolute path`), so that half buys a better error rather than a caught bug — kept because it
+names the record's field instead of an argument the caller never wrote. `..` and doubled
+separators are left alone: the runtime normalises them and applies the *same* normalisation
+to the mount destination and the working directory, so those two continue to agree.
 
 **And a credential name is read by a shell, which is stricter than the protocol carrying
 it.** Delivery is a line of `NAME=value` text, and a name like `1BAD`, `A-B` or `A B`
@@ -115,9 +147,15 @@ grammar `[A-Za-z_][A-Za-z0-9_]*` at creation. The general shape of the mistake: 
 only what would break the transport, when the receiver is what actually constrains the
 value.
 
-Both refusals happen after the workspace has been looked for, so both go through the
-unwind — which means a refusal must not take a *resuming* agent's workspace with it. That
-pair (unwinds the workspace it created, keeps the one it didn't) is tested for both.
+All three refusals happen after the workspace has been looked for, so all three go through
+the unwind — which means a refusal must not take a *resuming* agent's workspace with it.
+That pair (unwinds the workspace it created, keeps the one it didn't) is tested for each.
+
+One thing the workspace refusal cannot have: a test that catches the divergence itself.
+Once the value is refused there is no record left that produces a split mount, so the
+create/write/destroy/recreate test beside it stays green with the refusal removed. It states
+the property — where a process starts is what persists — and the refusal's own test is the
+one that fails. A passing persistence test is not coverage of this bug.
 
 ## Every pipe of a subprocess needs an `error` listener
 
