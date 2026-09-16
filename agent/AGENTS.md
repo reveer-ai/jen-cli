@@ -191,6 +191,24 @@ create/write/destroy/recreate test beside it stays green with the refusal remove
 the property — where a process starts is what persists — and the refusal's own test is the
 one that fails. A passing persistence test is not coverage of this bug.
 
+**Since ENG-197 the caller can be a model, and the reason that is survivable is an overlap
+nothing names.** Spawning made an agent the author of a record, so "caller data" stopped
+meaning "data the supervisor composed" and started meaning data a model wrote. The three
+refusals above are still the backstop, but they are not what holds today — what holds is
+that every field `SandboxRequest` reads is a field the spawn handler refuses to take from
+its caller. `SandboxRequest` is `Pick<AgentRecord, 'id' | 'environment' | 'workspace' |
+'credentials'>` and all four are in `OWNED` in `supervisor/index.ts`, so a child's four are
+copied from its parent's own record or derived by the supervisor. No value a model wrote
+reaches the driver at all.
+
+That is two lists in two files agreeing by coincidence of maintenance, not by construction.
+`sandbox/index.test.ts` pins the field list, so widening `SandboxRequest` fails a test — but
+that test says nothing about `OWNED`, so the natural fix is to update the pinned list and
+move on, and the new field is then reachable from a `spawn` the moment provisioning reads
+it. **Adding a field to `SandboxRequest` means adding it to `OWNED` in the same change**, or
+deciding deliberately that a model may set it and making the refusals above carry that
+weight for real.
+
 ## Every pipe of a subprocess needs an `error` listener
 
 A stream reports its own failure by emitting `error`, and an `error` with nothing listening
