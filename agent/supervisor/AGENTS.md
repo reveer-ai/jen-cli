@@ -220,6 +220,26 @@ A dismissed agent is left in its parent's `children`, which is why `#sending` ch
 dismissal itself: routing passes for a dismissed child, and `#post` would drop the message
 while the sender was told it was delivered.
 
+## Two of the five request kinds read the caller's record
+
+`spawn` and `stop` are the two. **`send`, `await` and `read` check the tree and never
+`record.tools`** — `#sending` asks whether the target is the caller's parent or one of its
+children, `#reading` asks whether the target is below the caller, and `#awaiting` asks
+nothing at all. So the double-check described above is a property of those two handlers, not
+a house rule the channel enforces, and the difference is reachable by the same actor the
+checks were written for: an agent whose record names only `spawn` can put a raw `read` frame
+on the channel and be handed a descendant's transcript, or a raw `send` frame and have it
+delivered, though its record grants neither.
+
+That is deliberate rather than missed. `send` and `read` are declared by ENG-198 and ENG-212,
+which is where the decision about gating them belongs, and whether `await` can require a
+grant at all is a real question — a record without it could never wait.
+
+**When those tasks land, the shape to reach for is the generic one**: refuse at the top of
+`#request` where `record.tools` does not include `frame.kind`. That is one `if`, it deletes
+both per-handler checks rather than joining them, and it covers every kind added after it. A
+third copy of the same check in a third handler is the thing to avoid.
+
 ## Only a request has somewhere to fail into
 
 A request frame that fails is answered to the agent that made it — a result it can read and act

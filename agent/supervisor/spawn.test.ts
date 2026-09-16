@@ -103,6 +103,11 @@ describe('the fields that decide what a child can reach are the supervisor’s',
     ['workspace', { workspace: '/somewhere-else' }],
     ['provider', { provider: 'elsewhere' }],
     ['baseURL', { baseURL: 'https://elsewhere.example/v1' }],
+    // The third of the endpoint trio. It cannot escalate — `parseRecord` refuses a
+    // `model.credential` naming nothing in `credentials` — but accepting it silently is the
+    // one thing this list exists to rule out, and it is the field the model was told it
+    // could not set.
+    ['credential', { credential: 'OTHER_KEY' }],
   ])('refuses a spawn that names `%s`, and creates nothing', async (field, extra) => {
     const run = await aRoot();
 

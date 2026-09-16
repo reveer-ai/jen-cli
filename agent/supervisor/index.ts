@@ -961,12 +961,19 @@ export class Supervisor {
  *
  * Not a list of dangerous strings — a list of the fields whose *value* is the supervisor's
  * decision. `id` and `parent` are what make parentage something the substrate knows rather
- * than something an agent asserts; `credentials`, `provider` and `baseURL` are what keep an
- * inherited secret pointed at the endpoint it was issued for; `environment` and `workspace`
- * are what a sandbox is built and isolated from. A request naming one is refused rather than
- * ignored, because a caller that named it expects it to take effect.
+ * than something an agent asserts; `environment` and `workspace` are what a sandbox is built
+ * and isolated from. A request naming one is refused rather than ignored, because a caller
+ * that named it expects it to take effect.
+ *
+ * **Two kinds of name, on purpose.** `credentials` is a record field; `provider`, `baseURL`
+ * and `credential` are *model* fields listed at the top level, because flattening a model's
+ * configuration into the request is exactly what a confused caller produces. Those three are
+ * the trio that decides which endpoint an inherited secret reaches, and refusing two of them
+ * while ignoring the third would leave this change's one rule with an exception in it — the
+ * model-facing description in `runtime/main.ts` promises a caller that all three are
+ * inherited and unsettable, and silence is not that promise kept.
  */
-const OWNED = ['id', 'parent', 'credentials', 'environment', 'workspace', 'provider', 'baseURL'] as const;
+const OWNED = ['id', 'parent', 'credentials', 'environment', 'workspace', 'provider', 'baseURL', 'credential'] as const;
 
 /** A string with something in it, or nothing. Whitespace is not a name, charter or model. */
 function phrase(value: unknown): string | null {
