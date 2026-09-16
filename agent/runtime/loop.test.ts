@@ -254,3 +254,85 @@ describe('the log carries what the message array cannot', () => {
     expect(client.requests[0]).not.toMatch(/"at"|"ms"|"ok"|"usage"|tokens/);
   });
 });
+
+/**
+ * The log leaves the process as it grows, not when the agent stops.
+ *
+ * `events` is still the truth and still returns the array; the callback only decides when a
+ * copy of it leaves. So the property worth asserting is that the two never disagree — an
+ * event the log carries that nothing outside the process heard about is a step a resumed
+ * agent silently repeats, which looks exactly like an agent that behaved.
+ */
+describe('events are emitted as they are appended', () => {
+  function emitting(script: Parameters<typeof scripted>[0]) {
+    const emitted: { type: string }[] = [];
+    const agent = new Runtime({
+      record: aRecord({ tools: ['fs'] }),
+      capabilities: [aCapability('fs')],
+      client: scripted(script),
+      clock: CLOCK,
+      emit: (event) => emitted.push(event),
+    });
+    return { agent, emitted };
+  }
+
+  it('emits exactly the log, in the order the log holds it', async () => {
+    const { agent, emitted } = emitting([asks(aCall('c1', 'fs')), says('Done.')]);
+    await agent.turn('Go.');
+
+    expect(emitted).toEqual(agent.events);
+  });
+
+  it('emits a step’s events before the step after it is taken', async () => {
+    let seen: string[] = [];
+    const client = scripted([asks(aCall('c1', 'fs')), says('Done.')]);
+    const emitted: { type: string }[] = [];
+    const agent = new Runtime({
+      record: aRecord({ tools: ['fs'] }),
+      capabilities: [
+        aCapability('fs', () => {
+          // Read from inside the first step's own capability call: everything the step
+          // decided is already out, and nothing of the step after it can be.
+          seen = emitted.map((event) => event.type);
+          return { content: 'done', ok: true };
+        }),
+      ],
+      client,
+      clock: CLOCK,
+      emit: (event) => emitted.push(event),
+    });
+
+    await agent.turn('Go.');
+    expect(seen).toEqual(['charter', 'message', 'tool_call', 'usage']);
+  });
+
+  it('emits the charter it seeds for a log that has none', () => {
+    const { emitted } = emitting([says('Done.')]);
+    expect(emitted).toMatchObject([{ type: 'charter', content: aRecord().charter }]);
+  });
+
+  /**
+   * The collision the supervisor's whole suspension design is built around, from this side:
+   * a log ending in an unanswered call gets one synthesized, and that answer has to reach
+   * the store or the next boot synthesizes it again.
+   */
+  it('emits the answer it synthesizes for a call the log left outstanding, and nothing already in it', () => {
+    const prior = [
+      { type: 'charter' as const, at: 'x', content: aRecord().charter },
+      { type: 'message' as const, at: 'x', from: 'parent' as const, content: 'Go.' },
+      { type: 'tool_call' as const, at: 'x', id: 'c1', name: 'fs', arguments: '{}' },
+      { type: 'usage' as const, at: 'x', in: 1, out: 1, model: 'scripted' },
+    ];
+    const emitted: { type: string }[] = [];
+    new Runtime({
+      record: aRecord({ tools: ['fs'] }),
+      capabilities: [aCapability('fs')],
+      client: scripted([]),
+      clock: CLOCK,
+      events: prior,
+      emit: (event) => emitted.push(event),
+    });
+
+    expect(emitted).toMatchObject([{ type: 'tool_result', id: 'c1', ok: false }]);
+  });
+});

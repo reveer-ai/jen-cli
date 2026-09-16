@@ -31,7 +31,16 @@ import { createHash, randomBytes } from 'node:crypto';
 import { SandboxError } from './index.ts';
 
 import type { Readable } from 'node:stream';
-import type { CredentialReference, CredentialResolver, Exit, Process, Sandbox, SandboxDriver, SandboxRequest } from './index.ts';
+import type {
+  CredentialReference,
+  CredentialResolver,
+  Exit,
+  Input,
+  Process,
+  Sandbox,
+  SandboxDriver,
+  SandboxRequest,
+} from './index.ts';
 
 /** Prefixes and labels. `jen.run` and `jen.agent` are what an orphan sweep finds. */
 const SANDBOX_PREFIX = 'jen-sandbox';
@@ -95,10 +104,11 @@ const DELIVER = 'while IFS= read -r line; do [ -z "$line" ] && break; export "$l
  */
 const VARIABLE_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
-/** A started subprocess: its output as it is produced, and its ending. */
+/** A started subprocess: its output as it is produced, what it still takes, and its ending. */
 export interface Started {
   stdout: Readable;
   stderr: Readable;
+  stdin: Input;
   exit: Promise<Exit>;
 }
 
@@ -109,13 +119,16 @@ export interface Started {
  * actually passed, which is the only way to hold the credential requirement — that a
  * secret reaches no command line — against the command line that really ran.
  *
- * `input` is written to the subprocess's standard input, which is then closed. It has one
- * caller — credential delivery — and it is why that delivery leaves no trace anywhere else
- * in this module: a secret sent this way is in a pipe and in the receiving process's
- * memory, and in no argument, no file, and no record the runtime keeps.
+ * `input` is the **first** thing written to the subprocess's standard input, which is then
+ * left open. Its one caller is credential delivery, and that is why the delivery leaves no
+ * trace anywhere else in this module: a secret sent this way is in a pipe and in the
+ * receiving process's memory, and in no argument, no file, and no record the runtime keeps.
+ * Passing nothing asks for no input pipe at all, which is what the many calls that only
+ * collect output do.
  *
  * Part of the contract, and the part a wrapper around this cannot leave to the default: a
- * pipe that breaks is reported through `exit` and never as an uncaught error.
+ * pipe that breaks is reported through `exit` or through the rejected send, and never as an
+ * uncaught error.
  */
 export type Spawner = (command: string, args: string[], env: NodeJS.ProcessEnv, input?: string) => Started;
 
@@ -136,8 +149,15 @@ export const spawner: Spawner = (command, args, env, input) => {
   // write in `EPIPE`. That error is emitted on `child.stdin`, never on `child`, so the
   // listeners below are not where it arrives.
   let broken: Error | undefined;
+  // **Whose failure a broken input is, is decided by whether anyone has sent yet.** The
+  // opening write has no other way to be reported, so it lands in `broken` and surfaces
+  // through `exit`. Every write after it was asked for by a caller holding a promise, and
+  // that promise is where its failure belongs — recording it here as well would fail an
+  // exit that is otherwise fine, reporting one broken pipe twice and in the wrong place.
+  let conversing = false;
   for (const pipe of [child.stdin, child.stdout, child.stderr]) {
     pipe?.on('error', (error: Error) => {
+      if (pipe === child.stdin && conversing) return;
       broken ??= error;
     });
   }
@@ -161,12 +181,44 @@ export const spawner: Spawner = (command, args, env, input) => {
   });
 
   // After the listeners, not before: this write is asynchronous, and its failure is one of
-  // the events they exist to catch.
-  child.stdin?.end(input);
+  // the events they exist to catch. **Written rather than ended** — what follows it is the
+  // rest of a conversation, and the credentials are only its first line.
+  if (input !== undefined) child.stdin?.write(input);
+
+  const stdin: Input = {
+    send: (text) =>
+      new Promise((resolve, reject) => {
+        conversing = true;
+        const pipe = child.stdin;
+        if (pipe === null || pipe.destroyed || pipe.writableEnded) {
+          reject(new SandboxError(`the input of \`${command}\` is no longer open, so nothing was sent.`));
+          return;
+        }
+        // The per-write callback rather than the stream's `error` event, because this is the
+        // one report the caller is owed and it has to name *this* send. A failure still
+        // reaches the listener above, which is what keeps it from being raised uncaught.
+        pipe.write(text, (error) => {
+          if (error) reject(new SandboxError(`sending to \`${command}\` failed: ${error.message}`, { cause: error }));
+          else resolve();
+        });
+      }),
+    end: () =>
+      new Promise((resolve) => {
+        conversing = true;
+        const pipe = child.stdin;
+        if (pipe === null || pipe.writableEnded) {
+          resolve();
+          return;
+        }
+        // Ending is not a delivery, so a pipe already broken is not a failure to report: the
+        // caller is saying it has nothing further, and it has nothing further either way.
+        pipe.end(() => resolve());
+      }),
+  };
 
   // `stdout`/`stderr` are non-null under the `pipe` stdio above; the types allow null
   // because other stdio settings would leave them absent.
-  return { stdout: child.stdout as Readable, stderr: child.stderr as Readable, exit };
+  return { stdout: child.stdout as Readable, stderr: child.stderr as Readable, stdin, exit };
 };
 
 /**
@@ -329,6 +381,34 @@ export class DockerSandboxDriver implements SandboxDriver {
   }
 
   /**
+   * End every sandbox of this run, from the marking alone.
+   *
+   * The labels applied at creation are the whole of what this has to work from, and that is
+   * deliberate: the caller it exists for is a supervisor that was killed, which is holding
+   * no handle on anything and has nothing to walk. A sweep driven by what a caller remembers
+   * finds nothing in exactly that case; one driven by the marking finds exactly what leaked.
+   *
+   * **It lists containers and it does not list volumes, and that asymmetry is the point.**
+   * Workspaces carry the same `jen.run` label — `#ensureWorkspace` applies it — so the query
+   * that finds what to end is one word away from the query that would find an agent's work
+   * and delete it, at the moment after a crash when that work is least recoverable. There is
+   * no `volume` here and there must never be one.
+   *
+   * `ps -a` rather than `ps`, so a sandbox that has stopped without being removed is still
+   * removed; `rm --force` succeeds on one that is already gone, which matters because an
+   * ordinary teardown and a sweep can reach the same sandbox.
+   */
+  async destroyAll(): Promise<void> {
+    const found = await this.#must(
+      ['ps', '-a', '--filter', `label=${RUN_LABEL}=${this.#run}`, '--format', '{{.ID}}'],
+      `looking for the sandboxes of ${this.#run}`,
+    );
+    const ids = found.stdout.split('\n').map((line) => line.trim()).filter((line) => line !== '');
+    if (ids.length === 0) return;
+    await this.#must(['rm', '--force', ...ids], `ending the sandboxes of ${this.#run}`);
+  }
+
+  /**
    * The handle creation returns.
    *
    * An object closing over the driver's private members rather than a class beside it,
@@ -340,16 +420,18 @@ export class DockerSandboxDriver implements SandboxDriver {
       /**
        * Every process starts through DELIVER, whether or not this agent has a credential —
        * one path, so the path that carries them is the one every test here exercises.
-       * `--interactive` is what keeps standard input attached long enough for the block to
-       * arrive; it is closed after whatever follows it, which the command sees as the end
-       * of its own input.
+       * `--interactive` is what keeps standard input attached, and it now stays attached
+       * for the life of the process rather than only long enough for the block to arrive.
        *
        * **The caller's input is concatenated onto the block rather than written after it**,
-       * and that is what makes the ordering unlosable — there is one write and one close,
-       * so nothing can interleave and nothing can arrive early. The prologue reads its
-       * lines one byte at a time, as POSIX requires of a shared descriptor, so it consumes
-       * the block and not a byte more; the command it `exec`s inherits the rest of the pipe
-       * exactly as the caller wrote it.
+       * and that is what makes the ordering unlosable — there is one write, so nothing can
+       * interleave and nothing can arrive early. The prologue reads its lines one byte at a
+       * time, as POSIX requires of a shared descriptor, so it consumes the block and not a
+       * byte more; the command it `exec`s inherits the rest of the pipe exactly as the
+       * caller wrote it, and everything sent afterwards as it is sent.
+       *
+       * The block is written unconditionally, so a process started here always has an input
+       * to be sent to — an agent with no credential is `\n` and a pipe, not no pipe.
        */
       exec: async (command, options) =>
         this.#start(
@@ -425,7 +507,7 @@ export class DockerSandboxDriver implements SandboxDriver {
     });
     // The caller is not obliged to await this, and an unawaited rejection is a crash.
     exit.catch(() => {});
-    return { stdout: started.stdout, stderr: started.stderr, exit };
+    return { stdout: started.stdout, stderr: started.stderr, stdin: started.stdin, exit };
   }
 
   async #collect(args: string[]): Promise<Completed> {

@@ -1,0 +1,872 @@
+/**
+ * The supervisor: the one component outside every sandbox, and the only one that is not an
+ * agent.
+ *
+ * It holds what no agent may — provisioning and destroying sandboxes, moving messages
+ * between agents, and storing records and transcripts — because the alternatives fail. A
+ * parent servicing its children's requests leaves the agent nobody spawned needing a path
+ * none of the others use, which makes the root structurally special. A sandbox-provisioning
+ * capability inside every runtime is homogeneous, and it grants every agent at every depth
+ * authority over the machine equal to the runtime's own, and it requires a parent's body to
+ * outlive every descendant that might still run — which forecloses suspension entirely.
+ *
+ * **It holds no reasoning, and that is the price of existing at all.** It encodes no rule
+ * about what a role may do, does not decide when an agent has finished, does not decide how
+ * long a body should be kept, and does not resolve a stalled tree. Every behaviour it grows
+ * that an agent could have expressed instead is a policy moved out of the weights and into
+ * code, where no charter can reach it. It is the component to keep smallest.
+ *
+ * ## Two lifetimes, and only one of them is what residency is about
+ *
+ * An **agent** exists because its record exists. It starts at spawn and ends only at `stop`;
+ * there is no completed state, and a child that has reported is dormant rather than
+ * finished. Its **body** is a sandbox, which exists only while the agent is thinking and is
+ * created and destroyed many times over one agent's life. None of that appears in the
+ * agent's transcript.
+ *
+ * ## The one thing to get right
+ *
+ * A deliberately suspended `await` and a process killed mid-call leave the stored log in
+ * **exactly the same shape** — a call with no result — and `answerInterrupted` runs on every
+ * construction and cannot tell them apart. A naively resumed agent would therefore be told
+ * its `await` was interrupted, reason about a failure that never happened, and leave a
+ * transcript that looks fine.
+ *
+ * Three things follow, and they are the spine of this file. State is **stored** rather than
+ * inferred, because inferring it from the log is exactly what cannot work. The answering
+ * result is appended to the log **before** the body boots, so the runtime constructs on a
+ * complete log and `answerInterrupted` finds nothing to do. And `await` stays an ordinary
+ * correlated request, so suspension is something that happens *to* an agent rather than
+ * something its runtime has a code path for.
+ */
+import { encode, parseFromAgent, lines, ProtocolError } from '../protocol.ts';
+import { Store, StoreError, type AgentState, type Message, type StoredAgent } from './store.ts';
+
+import type { AgentRecord } from '../record.ts';
+import type { Event } from '../runtime/events.ts';
+import type { FromAgent, RequestFrame } from '../protocol.ts';
+import type { Process, Sandbox, SandboxDriver } from '../sandbox/index.ts';
+
+/** What a request the supervisor could not carry out is reported as. */
+export class SupervisorError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'SupervisorError';
+  }
+}
+
+/**
+ * How the substrate's own words are marked where an agent reads them.
+ *
+ * The flag on the message is the structural half and this is the half the model sees. Both
+ * are needed: a parent reasoning about a child's report has only the text in front of it,
+ * and a report of a death that read like the child's own last words would be the substrate
+ * misleading a parent about who spoke.
+ */
+export const SUBSTRATE = '[substrate]';
+
+/** What an agent is handed when a message is delivered to it. */
+export function render(message: Message): string {
+  return message.substrate === true ? `${SUBSTRATE} ${message.content}` : message.content;
+}
+
+/** What a body is, for as long as there is one. */
+interface Body {
+  sandbox: Sandbox;
+  process: Process;
+  timer?: ReturnType<typeof setTimeout>;
+  /** Set where the supervisor is the one ending it, so its exit is not read as a death. */
+  intended?: true;
+}
+
+export interface SupervisorOptions {
+  store: Store;
+  driver: SandboxDriver;
+  /**
+   * What a sandbox runs to become an agent.
+   *
+   * A value rather than a constant, because the substrate's own entry point is what a real
+   * sandbox carries and a test drives something far smaller. Nothing here reads it.
+   */
+  command?: string[];
+  /**
+   * Where a message the root addresses to its parent goes.
+   *
+   * The root's parent is the human. A message it sends upward has to reach one, and a human
+   * addressing the root comes back through {@link Supervisor.tell} — the same path a
+   * parent's message takes, because the human is a participant in this graph rather than an
+   * exception to it.
+   */
+  onMessage?: (message: Message) => void;
+  /**
+   * Where a stalled tree is reported.
+   *
+   * Reported and nothing else: no agent is woken, messaged or terminated. Choosing how to
+   * break a deadlock is a judgment about the work, and the human is who the substrate has
+   * for that.
+   *
+   * It defaults to a line on standard error rather than to silence. What "surfaced to the
+   * human" should concretely mean is genuinely open — a log line, an exit, something an
+   * interface renders — and the interface that would consume it does not exist yet. But a
+   * default of nothing would make a stalled tree indistinguishable from a working one for
+   * every caller that has not thought about it, which is the one outcome the requirement
+   * exists to prevent.
+   */
+  onStalled?: (waiting: readonly string[]) => void;
+  /**
+   * Where the supervisor's own trouble goes.
+   *
+   * Not an agent's failure — a bad request is answered to the agent that made it, and a body
+   * that dies is a message to its parent. This is what is left: a sandbox that could not be
+   * provisioned, a store that could not be written, a channel that broke while being read.
+   * None of it is anything an agent can act on and all of it is something a human needs to
+   * know, and the alternative to a destination is an unhandled rejection ending the one
+   * process that is holding every agent in the run.
+   *
+   * It defaults to standard error for the same reason {@link onStalled} does.
+   */
+  onFailure?: (agent: string, error: unknown) => void;
+  /** Milliseconds since the epoch. Injected so a test can hold the transcript still. */
+  clock?: () => number;
+}
+
+export class Supervisor {
+  readonly #store: Store;
+  readonly #driver: SandboxDriver;
+  readonly #command: string[];
+  readonly #onMessage: (message: Message) => void;
+  readonly #onStalled: (waiting: readonly string[]) => void;
+  readonly #onFailure: (agent: string, error: unknown) => void;
+  readonly #clock: () => number;
+  readonly #bodies = new Map<string, Body>();
+  /**
+   * Everything that changes state, one at a time.
+   *
+   * **Not a throughput concern — a correctness one.** Every transition here is read the
+   * stored value, change it, write it back, and each of those spans an `await`. Two of them
+   * interleaved on one agent lose whichever wrote first: two messages posted to the same
+   * mailbox become one, and nothing reports anything. The supervisor moves messages between
+   * tens of agents, so serializing the whole of it costs nothing worth measuring and removes
+   * an entire category of failure that would show up as a tree quietly stopping.
+   *
+   * Only the outermost entry points queue. Nothing reached from inside a queued task may
+   * queue again, which is why the public calls are thin wrappers over private ones.
+   */
+  #queue: Promise<unknown> = Promise.resolve();
+  #reported = false;
+  #closing = false;
+
+  constructor(options: SupervisorOptions) {
+    this.#store = options.store;
+    this.#driver = options.driver;
+    this.#command = options.command ?? ['jen-agent'];
+    this.#onMessage = options.onMessage ?? (() => {});
+    this.#onStalled =
+      options.onStalled ??
+      ((waiting) => {
+        process.stderr.write(
+          `every agent in ${this.#store.run} is waiting and nothing is pending: ${waiting.join(', ')}\n`,
+        );
+      });
+    this.#onFailure =
+      options.onFailure ??
+      ((agent, error) => {
+        const said = error instanceof Error ? error.message : String(error);
+        process.stderr.write(`the supervisor could not carry on for ${agent}: ${said}\n`);
+      });
+    this.#clock = options.clock ?? Date.now;
+  }
+
+  get store(): Store {
+    return this.#store;
+  }
+
+  /** Which agents currently hold a body. For a test asking what suspension actually did. */
+  get resident(): string[] {
+    return [...this.#bodies.keys()];
+  }
+
+  /**
+   * Every agent waiting, and nothing pending anywhere.
+   *
+   * **Residency is deliberately not part of this.** A timer only decides whether a body
+   * stays up; it can never produce a message, so a stalled tree is stalled whether or not
+   * one is armed, and waiting for timers to expire before saying so would delay the
+   * diagnosis and change nothing about it.
+   */
+  get stalled(): boolean {
+    const live = this.#store.ids().filter((id) => this.#store.agent(id).state.status !== 'dismissed');
+    if (live.length === 0) return false;
+    return live.every((id) => {
+      const agent = this.#store.agent(id);
+      return agent.state.status === 'waiting' && agent.mailbox.length === 0;
+    });
+  }
+
+  /**
+   * Bring an agent into existence, optionally with something to do.
+   *
+   * The opening instruction goes into its mailbox and is delivered by the same two paths any
+   * message takes, so an agent's first turn and its hundredth arrive identically.
+   */
+  async add(record: AgentRecord, opening?: string): Promise<string> {
+    return this.#serial(() => this.#add(record, opening));
+  }
+
+  async #add(record: AgentRecord, opening?: string): Promise<string> {
+    const parent = record.parent;
+    const state: StoredAgent = {
+      state: { status: 'waiting', request: null },
+      parent,
+      children: [],
+      mailbox: opening === undefined ? [] : [{ from: parent, content: opening }],
+    };
+    await this.#store.add(record, state);
+
+    if (parent !== null) {
+      const above = this.#store.agent(parent);
+      await this.#store.save(parent, { ...above, children: [...above.children, record.id] });
+    }
+
+    await this.#settle();
+    return record.id;
+  }
+
+  /** A human's message to the agent nobody spawned, by the path a parent's message takes. */
+  async tell(content: string): Promise<void> {
+    return this.#serial(() => this.#tell(content));
+  }
+
+  async #tell(content: string): Promise<void> {
+    const root = this.#store.root;
+    if (root === null) throw new SupervisorError('this run has no agent to address.');
+    await this.#post(root, { from: null, content });
+    await this.#settle();
+  }
+
+  /**
+   * Take over a store a previous supervisor left, whatever state it left it in.
+   *
+   * **The sweep comes first, and it ends bodies and releases no workspace.** Whatever a
+   * killed supervisor left running is unusable anyway: the protocol rides each agent's own
+   * standard streams, so a sandbox that outlived its supervisor has dead pipes and there is
+   * nothing to re-attach to. Sweeping by the run's marking and resuming from the store is
+   * the only correct move, and it needs no handle on anything.
+   *
+   * **Nothing here reports a termination**, which is the distinction 6.3 is about. A body
+   * lost while the supervisor was watching is a death; a supervisor restarting over a store
+   * finds *every* agent bodiless, and reading that as a tree of deaths would deliver a
+   * termination report for every agent in the run at the moment it was recovering.
+   */
+  async resume(): Promise<void> {
+    return this.#serial(() => this.#resume());
+  }
+
+  async #resume(): Promise<void> {
+    await this.#driver.destroyAll();
+    for (const id of this.#store.ids()) {
+      // `working` is the whole of the question: the agent was mid-turn when its supervisor
+      // went, so it owes the model a step whether its log ends in a call nobody answered or
+      // in a step whose end nobody heard.
+      if (this.#store.agent(id).state.status === 'working') await this.#boot(id, true);
+    }
+    await this.#settle();
+  }
+
+  /** End every body this supervisor is holding. Records, transcripts and workspaces stay. */
+  async shutdown(): Promise<void> {
+    return this.#serial(() => this.#shutdown());
+  }
+
+  async #shutdown(): Promise<void> {
+    this.#closing = true;
+    for (const id of [...this.#bodies.keys()]) await this.#suspend(id);
+    await this.#store.close();
+  }
+
+  /**
+   * The supervisor's own trouble, said once and never rethrown from here.
+   *
+   * Reached from paths that have nowhere else to fail: a body's channel, and the exit
+   * handler. Both are promises nobody holds, so a throw from either is an unhandled
+   * rejection — which ends the one process holding every agent in the run.
+   */
+  #failed(id: string, error: unknown): void {
+    try {
+      this.#onFailure(id, error);
+    } catch {
+      // A destination that throws is not going to be told about it here.
+    }
+  }
+
+  #serial<T>(task: () => Promise<T>): Promise<T> {
+    const done = this.#queue.then(task, task);
+    // The queue itself never rejects, so one failed task does not poison every one after it.
+    this.#queue = done.then(
+      () => {},
+      () => {},
+    );
+    return done;
+  }
+
+  // ---------------------------------------------------------------- bodies
+
+  /**
+   * Provision from the record, boot a runtime on the stored transcript, and start listening.
+   *
+   * The boot frame carries the record and the log together on the sandbox's standard input,
+   * behind the credential block — see `runtime/boot.ts`.
+   *
+   * **`owed` is the one thing the runtime cannot work out for itself**, and it is this
+   * file's to answer. A log that ends at a complete step belongs either to an agent standing
+   * at a turn boundary or to one whose turn ended in a step this supervisor never heard the
+   * end of, and those two want opposite things — wait, and take a step. What separates them
+   * is the stored state, which is stored rather than inferred for exactly this class of
+   * reason. A runtime left to guess guesses wrong in silence.
+   */
+  async #boot(id: string, owed: boolean): Promise<Body> {
+    const record = this.#store.record(id);
+    const sandbox = await this.#driver.create({
+      id: record.id,
+      environment: record.environment,
+      workspace: record.workspace,
+      credentials: record.credentials,
+    });
+
+    const events = await this.#store.transcript(id);
+    const started = await sandbox.exec(this.#command, {
+      input: `${JSON.stringify({ record, events, owed })}\n`,
+    });
+
+    const body: Body = { sandbox, process: started };
+    this.#bodies.set(id, body);
+
+    // **Both of these are promises nobody holds**, so a rejection escaping either is an
+    // unhandled rejection — which under Node's default ends this process, and this process is
+    // holding every other agent in the run. The same argument narrowed `Input` away from a
+    // stream in `sandbox/index.ts`: one agent's failure must not be every agent's.
+    void this.#listen(id, body).catch((error: unknown) => this.#failed(id, error));
+    void started.exit
+      .then(
+        (exit) => this.#serial(() => this.#ended(id, body, exit.signal ?? `exit ${exit.code ?? 0}`)),
+        (error: unknown) =>
+          this.#serial(() => this.#ended(id, body, error instanceof Error ? error.message : String(error))),
+      )
+      .catch((error: unknown) => this.#failed(id, error));
+
+    return body;
+  }
+
+  /**
+   * Read this body's frames, in the order it sent them.
+   *
+   * Handled one at a time and awaited, because the order is load-bearing: an event and the
+   * request that follows it are the same step, and a store that took them concurrently
+   * could write the request's answer into a log the event had not reached.
+   */
+  async #listen(id: string, body: Body): Promise<void> {
+    for await (const line of lines(body.process.stdout)) {
+      if (this.#bodies.get(id) !== body) return;
+
+      let frame: FromAgent;
+      try {
+        frame = parseFromAgent(line);
+      } catch (error) {
+        // Reported to the agent that sent it, and nothing else happens: its other
+        // outstanding requests are untouched, because none of them is what was unreadable.
+        await this.#say(id, {
+          t: 'malformed',
+          reason: error instanceof ProtocolError ? error.message : String(error),
+        });
+        continue;
+      }
+
+      try {
+        await this.#serial(() => this.#frame(id, frame));
+      } catch (error) {
+        // A request that could not be carried out is a result the agent can read and act
+        // on, never a reason for the supervisor to stop — one agent's bad request must not
+        // take the run with it.
+        //
+        // An event or a turn frame has no such answer to fail into: there is no request id
+        // to attach a refusal to, and the agent asked for nothing. What reaches here from
+        // one is the supervisor's own trouble — a daemon that went away under a boot, a
+        // store it could not write — which no agent can act on and a human has to hear
+        // about. So it is reported and the channel carries on, rather than becoming a
+        // rejection that ends the run.
+        if (frame.t !== 'request') {
+          this.#failed(id, error);
+          continue;
+        }
+        await this.#say(id, {
+          t: 'answer',
+          id: frame.id,
+          ok: false,
+          content: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+  }
+
+  /**
+   * A body that ended, and whether that is a death.
+   *
+   * An agent whose state still says `working` never spoke, so its parent is waiting for a
+   * message that will never arrive — and without this, nothing notices: the parent waits,
+   * the tree stops, and no failure is reported anywhere. An agent that reported first is in
+   * `waiting` by the time its body ends, which is also what a suspension leaves behind, so
+   * neither is mistaken for a death.
+   */
+  async #ended(id: string, body: Body, how: string): Promise<void> {
+    if (this.#bodies.get(id) !== body) return;
+    this.#disarm(id);
+    this.#bodies.delete(id);
+    if (body.intended === true || this.#closing) return;
+
+    const agent = this.#store.agent(id);
+    if (agent.state.status !== 'working') return;
+
+    // Delivered as an ordinary message, by the ordinary paths. Turning a failure into input
+    // is what lets the parent's weights choose between retrying, replacing, escalating and
+    // giving up — none of which the substrate should be choosing.
+    await this.#post(agent.parent, { from: id, content: `${id} terminated: ${how}`, substrate: true });
+    await this.#settle();
+  }
+
+  /** Sync the log, then end the body. Never the other way round, and never in parallel. */
+  async #suspend(id: string): Promise<void> {
+    const body = this.#bodies.get(id);
+    if (body === undefined) return;
+    this.#disarm(id);
+    this.#bodies.delete(id);
+    body.intended = true;
+
+    // The one ordering that cannot be relaxed. An agent resumed from a log missing its final
+    // steps does not fail — it repeats work it had already done, or reports on work that is
+    // no longer there, and nothing distinguishes either from an agent that behaved.
+    await this.#store.sync(id).catch(() => {});
+    await body.sandbox.destroy().catch(() => {});
+  }
+
+  /**
+   * Arm the agent's own number, or tear down where it named none.
+   *
+   * **There is no default, minimum, maximum or adjustment here, and there must never be
+   * one.** Only the agent can know which case it is in, because it has just decided what it
+   * dispatched — an agent coordinating several short-lived children would pay a sandbox
+   * start on every wake for nothing, and one waiting on a day of work should cost nothing at
+   * all meanwhile. A constant in this file deciding that would be policy in code.
+   */
+  #residency(id: string, keep: number): void {
+    this.#disarm(id);
+    const body = this.#bodies.get(id);
+    if (body === undefined) return;
+    if (keep <= 0) {
+      void this.#serial(() => this.#suspend(id));
+      return;
+    }
+    body.timer = setTimeout(() => void this.#serial(() => this.#suspend(id)), keep);
+  }
+
+  #disarm(id: string): void {
+    const body = this.#bodies.get(id);
+    if (body?.timer === undefined) return;
+    clearTimeout(body.timer);
+    body.timer = undefined;
+  }
+
+  // ---------------------------------------------------------------- frames
+
+  async #frame(id: string, frame: FromAgent): Promise<void> {
+    if (frame.t === 'event') {
+      await this.#store.append(id, frame.event);
+      return;
+    }
+    if (frame.t === 'turn') {
+      await this.#turn(id, frame.message, frame.residency);
+      return;
+    }
+    await this.#request(id, frame);
+  }
+
+  /**
+   * The turn ended: the agent produced content with nothing outstanding.
+   *
+   * That content *is* the message to its parent — there is no completion channel and no
+   * status field an agent writes. The agent is now at a turn boundary, which is the same
+   * `waiting` an `await` reaches, arrived at without asking, which is why the runtime
+   * carries zero for its body.
+   */
+  async #turn(id: string, message: string, residency: number): Promise<void> {
+    const agent = this.#store.agent(id);
+    await this.#store.save(id, { ...agent, state: { status: 'waiting', request: null } });
+    await this.#post(agent.parent, { from: id, content: message });
+    if (this.#store.agent(id).mailbox.length === 0) this.#residency(id, residency);
+    await this.#settle();
+  }
+
+  async #request(id: string, frame: RequestFrame): Promise<void> {
+    const input = (typeof frame.input === 'object' && frame.input !== null ? frame.input : {}) as Record<
+      string,
+      unknown
+    >;
+
+    switch (frame.kind) {
+      case 'await':
+        return this.#awaiting(id, frame);
+      case 'send':
+        return this.#sending(id, frame, input);
+      case 'spawn':
+        return this.#spawning(id, frame, input);
+      case 'stop':
+        return this.#stopping(id, frame, input);
+      case 'read':
+        return this.#reading(id, frame, input);
+      default:
+        // A kind nothing handles is a result the model can read, not a transport failure.
+        // Adding one is a case here and nothing else — the channel does not change.
+        return this.#say(id, {
+          t: 'answer',
+          id: frame.id,
+          ok: false,
+          content: `There is no capability named "${frame.kind}".`,
+        });
+    }
+  }
+
+  /**
+   * The agent asked to receive a message.
+   *
+   * **Nothing here is a suspend path.** The request is correlated like any other and the
+   * agent is simply waiting for its answer; suspension is what this supervisor may do with
+   * the body meanwhile, and the runtime is never told which happened.
+   */
+  async #awaiting(id: string, frame: RequestFrame): Promise<void> {
+    const agent = this.#store.agent(id);
+    await this.#store.save(id, { ...agent, state: { status: 'waiting', request: frame.id } });
+    // Only where there is nothing to deliver. Arming first would tear a body down at
+    // residency zero and immediately provision another one to hand over a message that was
+    // already sitting in the mailbox.
+    if (agent.mailbox.length === 0) this.#residency(id, frame.residency);
+    await this.#settle();
+  }
+
+  /** A message to this agent's parent or to one of its children, and to nobody else. */
+  async #sending(id: string, frame: RequestFrame, input: Record<string, unknown>): Promise<void> {
+    const agent = this.#store.agent(id);
+    const to = typeof input.to === 'string' ? input.to : null;
+    const content = typeof input.content === 'string' ? input.content : null;
+
+    if (to === null || content === null) {
+      return this.#say(id, { t: 'answer', id: frame.id, ok: false, content: 'A send needs a `to` and a `content`.' });
+    }
+    // The topology is a tree, so this is a parent pointer and a list of children. There is
+    // no graph here and no route to compute — and a sibling is not reachable by construction
+    // rather than by a rule about who may talk to whom.
+    if (to !== agent.parent && !agent.children.includes(to)) {
+      return this.#say(id, {
+        t: 'answer',
+        id: frame.id,
+        ok: false,
+        content: `"${to}" is neither your parent nor one of your children, so nothing was sent.`,
+      });
+    }
+
+    // A dismissed agent is still in its parent's `children`, so the routing above passes for
+    // it and `#post` would drop the message while this answered `delivered`. A sender told
+    // its message landed waits on an answer that cannot come; a sender told it was refused
+    // has made a mistake it can reason about. Checked here, where the routing decision
+    // already is, rather than in `#post` — whose other caller is a termination report for an
+    // agent that was dismissed while its child was dying, and that one is a genuine drop.
+    if (this.#store.agent(to).state.status === 'dismissed') {
+      return this.#say(id, {
+        t: 'answer',
+        id: frame.id,
+        ok: false,
+        content: `"${to}" has been dismissed, so nothing was sent.`,
+      });
+    }
+
+    // Durable first. `send` is fire-and-forget to the agent that calls it, so an
+    // acknowledgement that outran the write would be the substrate lying about the one
+    // thing the caller can check.
+    await this.#post(to, { from: id, content });
+    await this.#say(id, { t: 'answer', id: frame.id, ok: true, content: `delivered to ${to}` });
+    await this.#settle();
+  }
+
+  /** A child, built from what the parent asked for and from the parent's own record. */
+  async #spawning(id: string, frame: RequestFrame, input: Record<string, unknown>): Promise<void> {
+    const parent = this.#store.record(id);
+    const agent = this.#store.agent(id);
+    const name = typeof input.name === 'string' ? input.name : null;
+    const charter = typeof input.charter === 'string' ? input.charter : null;
+
+    if (name === null || charter === null) {
+      return this.#say(id, {
+        t: 'answer',
+        id: frame.id,
+        ok: false,
+        content: 'A spawn needs a `name` and a `charter`.',
+      });
+    }
+
+    // **The id is the supervisor's**, because an agent naming its own child's could name
+    // one that already exists — and two agents sharing an id share a workspace, a
+    // transcript and a mailbox.
+    const record: AgentRecord = {
+      id: `${parent.id}-${agent.children.length + 1}`,
+      name,
+      charter,
+      // Inherited unless named, so an agent that says only what its child is for gets one
+      // that can reach the same provider from the same kind of sandbox. Nothing is
+      // *widened* here: `tools` defaults to none rather than to the parent's.
+      model: parent.model,
+      workspace: typeof input.workspace === 'string' ? input.workspace : parent.workspace,
+      environment: typeof input.environment === 'string' ? input.environment : parent.environment,
+      tools: Array.isArray(input.tools) ? (input.tools as string[]).filter((one) => typeof one === 'string') : [],
+      credentials: parent.credentials,
+      parent: parent.id,
+    };
+
+    const opening = typeof input.opening === 'string' ? input.opening : undefined;
+    await this.#add(record, opening);
+    await this.#say(id, { t: 'answer', id: frame.id, ok: true, content: record.id });
+  }
+
+  /**
+   * Dismiss a child, and with it everything below that child.
+   *
+   * **The cascade is not a convenience.** A dismissed agent's mailbox is never read again,
+   * so a grandchild left running holds a body, keeps working, and addresses a parent that
+   * has gone — every report it makes dropped, every `send` it makes refused. The one call
+   * whose purpose is to end an agent would be the call that leaks containers, and the deeper
+   * the subtree the more of them.
+   *
+   * **The workspace is kept**, for every agent this reaches, which is the safe default until
+   * something asks otherwise: releasing it is irreversible, and whatever a dismissed agent
+   * built may be exactly what its parent dismissed it for.
+   */
+  async #stopping(id: string, frame: RequestFrame, input: Record<string, unknown>): Promise<void> {
+    const agent = this.#store.agent(id);
+    const target = typeof input.id === 'string' ? input.id : null;
+
+    if (target === null || !agent.children.includes(target)) {
+      return this.#say(id, {
+        t: 'answer',
+        id: frame.id,
+        ok: false,
+        content: `"${String(target)}" is not one of your children, so nothing was stopped.`,
+      });
+    }
+
+    // Deepest first, so that nothing is left addressing a parent that has already gone
+    // while this walk is still running.
+    for (const one of this.#below(target).reverse()) {
+      const agent = this.#store.agent(one);
+      if (agent.state.status === 'dismissed') continue;
+      await this.#store.save(one, { ...agent, state: { status: 'dismissed' }, mailbox: [] });
+      await this.#suspend(one);
+    }
+
+    await this.#say(id, { t: 'answer', id: frame.id, ok: true, content: `stopped ${target}` });
+    await this.#settle();
+  }
+
+  /** An agent and everything below it, nearest first. The tree walked downward. */
+  #below(id: string): string[] {
+    const found = [id];
+    for (let at = 0; at < found.length; at += 1) {
+      found.push(...this.#store.agent(found[at]!).children);
+    }
+    return found;
+  }
+
+  /**
+   * A transcript, where the target is below the reader in the tree.
+   *
+   * The restriction follows from the tree rather than from a policy about roles, which is
+   * what keeps it out of the class of rules the substrate places in the weights: an agent
+   * may inspect the work it is accountable for, and it is accountable for its descendants.
+   *
+   * **A refusal is a refusal**, never an empty transcript — silence and emptiness are
+   * indistinguishable from a target that did nothing.
+   */
+  async #reading(id: string, frame: RequestFrame, input: Record<string, unknown>): Promise<void> {
+    const target = typeof input.id === 'string' ? input.id : null;
+    if (target === null || !this.#store.has(target)) {
+      return this.#say(id, {
+        t: 'answer',
+        id: frame.id,
+        ok: false,
+        content: `There is no agent "${String(target)}" in this run.`,
+      });
+    }
+    if (!this.#descends(target, id)) {
+      return this.#say(id, {
+        t: 'answer',
+        id: frame.id,
+        ok: false,
+        content: `"${target}" is not below you, so its transcript is not yours to read.`,
+      });
+    }
+
+    const from = typeof input.from === 'number' && input.from >= 0 ? Math.floor(input.from) : 0;
+    const count =
+      typeof input.count === 'number' && input.count > 0 ? Math.floor(input.count) : Number.POSITIVE_INFINITY;
+    const events = await this.#store.transcript(target, from, count);
+
+    await this.#say(id, {
+      t: 'answer',
+      id: frame.id,
+      ok: true,
+      content: JSON.stringify({ id: target, from, total: await this.#store.length(target), events }),
+    });
+  }
+
+  /** Whether `target` is below `above`, walked over the stored parentage. */
+  #descends(target: string, above: string): boolean {
+    let at = this.#store.agent(target).parent;
+    while (at !== null) {
+      if (at === above) return true;
+      at = this.#store.agent(at).parent;
+    }
+    return false;
+  }
+
+  // ---------------------------------------------------------------- delivery
+
+  /** Put a message where its recipient will find it, durably, before anyone is told. */
+  async #post(to: string | null, message: Message): Promise<void> {
+    if (to === null) {
+      // The root's parent is the human.
+      this.#onMessage(message);
+      return;
+    }
+    const agent = this.#store.agent(to);
+    if (agent.state.status === 'dismissed') return;
+    await this.#store.save(to, { ...agent, mailbox: [...agent.mailbox, message] });
+  }
+
+  /** Deliver whatever can be delivered, then say whether the tree can still move. */
+  async #settle(): Promise<void> {
+    for (const id of this.#store.ids()) await this.#deliver(id);
+
+    if (!this.stalled) {
+      this.#reported = false;
+      return;
+    }
+    if (this.#reported) return;
+    this.#reported = true;
+    this.#onStalled(this.#store.ids().filter((id) => this.#store.agent(id).state.status === 'waiting'));
+  }
+
+  /**
+   * The two paths a message reaches a conversation by, chosen by what the agent is doing and
+   * by nothing else.
+   *
+   * A message for an agent that asked to receive one is the result of that request. A
+   * message for an agent at a turn boundary begins a new turn, in the position that agent's
+   * parent occupies in its conversation — which is the same operation at every depth, a
+   * human addressing the root included. **A message for a working agent waits**: an
+   * in-flight turn is not interrupted by a message's arrival.
+   */
+  async #deliver(id: string): Promise<void> {
+    const agent = this.#store.agent(id);
+    const [message, ...rest] = agent.mailbox;
+    if (message === undefined || agent.state.status !== 'waiting') return;
+
+    const answering = agent.state.request;
+    const content = render(message);
+    await this.#store.save(id, { ...agent, mailbox: rest, state: { status: 'working' } });
+
+    const body = this.#bodies.get(id);
+    if (body !== undefined) {
+      this.#disarm(id);
+      await this.#say(
+        id,
+        answering === null ? { t: 'message', content } : { t: 'answer', id: answering, ok: true, content },
+      );
+      return;
+    }
+
+    // No body: the agent is dormant and is about to be woken in a fresh one. Where it was
+    // waiting on a request, the answer is written into the log **first** — see this file's
+    // header for why that ordering is the whole design.
+    try {
+      if (answering !== null) await this.#answerInLog(id, content);
+      // A body booted onto a log that now carries the answer has an input to work from and
+      // nothing coming on the channel, so it owes a step. A body woken at a turn boundary is
+      // about to be handed a message frame, and a step taken before that arrived would be a
+      // step on nothing.
+      const woken = await this.#boot(id, answering !== null);
+      if (answering === null) await this.#say(id, { t: 'message', content }, woken);
+    } catch (error) {
+      // **The message is now in no mailbox, no log and no living process.** It left the
+      // mailbox above, and the boot that was supposed to consume it did not happen — so
+      // without this, a daemon that went away costs a human's instruction or a child's whole
+      // turn of work, and what is left behind is an agent recorded as `working` that a later
+      // supervisor resumes into a body never told what it was woken for. The resident path
+      // needs none of this: `#say` swallows a write to a body that has gone and the exit
+      // already on its way becomes a termination its parent can act on.
+      //
+      // Restoring is exact rather than approximate. Where the answer reached the log before
+      // the boot failed, the retry finds the call already answered and appends nothing —
+      // `#answerInLog` returns on an outstanding call it cannot find — so the message is
+      // delivered once across both attempts rather than twice.
+      await this.#store.save(id, agent).catch(() => {});
+      throw error;
+    }
+  }
+
+  /**
+   * Append the answering result to the stored log, where the agent's body is gone.
+   *
+   * This is less clever than it looks and it should read as ordinary. For a
+   * supervisor-backed capability the supervisor *is* what produces the result: normally it
+   * sends it down the pipe and the runtime appends it. When there is no pipe, it appends the
+   * same value to the same place itself — same result, same position, different delivery.
+   *
+   * The call it answers is the outstanding one in the log, not a request id: a request id
+   * belongs to the runtime that raised it, and that runtime is gone.
+   */
+  async #answerInLog(id: string, content: string): Promise<void> {
+    const events = await this.#store.transcript(id);
+    const answered = new Set(events.flatMap((event) => (event.type === 'tool_result' ? [event.id] : [])));
+    const outstanding = events.filter(
+      (event): event is Extract<Event, { type: 'tool_call' }> => event.type === 'tool_call' && !answered.has(event.id),
+    );
+    const call = outstanding.at(-1);
+
+    // Nothing outstanding means the stored state and the stored log disagree, which should
+    // not happen: the runtime appends a call's event before it raises the request. Read as a
+    // turn boundary rather than repaired, because that reading is recoverable — a message
+    // that begins a turn is never lost — while writing a result for a call that is not there
+    // produces a log the provider rejects outright on the next step.
+    if (call === undefined) return;
+
+    const answer: Event = {
+      type: 'tool_result',
+      at: new Date(this.#clock()).toISOString(),
+      id: call.id,
+      content,
+      ok: true,
+      ms: 0,
+    };
+    await this.#store.append(id, answer);
+  }
+
+  /** One frame to one agent. A body that cannot be written to is not a run-ending failure. */
+  async #say(id: string, frame: Parameters<typeof encode>[0], to?: Body): Promise<void> {
+    const body = to ?? this.#bodies.get(id);
+    if (body === undefined) return;
+    try {
+      await body.process.stdin.send(encode(frame));
+    } catch {
+      // The body has gone. Its exit is already on its way here, and that is where an agent
+      // that ended without speaking is turned into something its parent can act on.
+    }
+  }
+}
+
+export { Store, StoreError, type AgentState, type Message, type StoredAgent } from './store.ts';

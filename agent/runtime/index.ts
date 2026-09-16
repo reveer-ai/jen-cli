@@ -37,6 +37,22 @@ export interface RuntimeOptions {
   client: ModelClient;
   /** Milliseconds since the epoch. Injected so a test can hold the transcript still. */
   clock?: () => number;
+  /**
+   * Called as each event is appended, before anything else happens.
+   *
+   * **This decides when a copy of the log leaves the process, and nothing else.** The array
+   * is still the truth and {@link Runtime.events} still returns it; the loop, the
+   * projection, the record and the capability surface are unaware this exists. A container
+   * may end at any moment, and a transcript emitted when the agent stops is a transcript
+   * lost in exactly the case it exists for.
+   *
+   * Events are emitted **in the order they sit in the log**, which for everything the loop
+   * appends is the order they were decided. The one event that is not appended at the end
+   * is the charter, and it is added only to a log that carries none — an empty one, for any
+   * agent a supervisor manages — so the two orders agree and a listener that appends what
+   * it is given ends up with the same array.
+   */
+  emit?: (event: Event) => void;
 }
 
 export class Runtime {
@@ -44,6 +60,7 @@ export class Runtime {
   readonly #registry: ReadonlyMap<string, Capability>;
   readonly #client: ModelClient;
   readonly #clock: () => number;
+  readonly #emit: (event: Event) => void;
   #events: Event[];
 
   /**
@@ -60,12 +77,23 @@ export class Runtime {
     this.#record = options.record;
     this.#client = options.client;
     this.#clock = options.clock ?? Date.now;
+    this.#emit = options.emit ?? (() => {});
     this.#registry = resolveCapabilities(options.record.tools, options.capabilities ?? []);
 
-    const events = answerInterrupted(options.events ?? [], () => this.#at());
+    const prior = options.events ?? [];
+    const events = answerInterrupted(prior, () => this.#at());
     this.#events = events.some((event) => event.type === 'charter')
       ? events
       : [{ type: 'charter', at: this.#at(), content: options.record.charter }, ...events];
+
+    // Construction appends too — the charter for a log with none, and an answer for every
+    // call the log left outstanding — and those are events like any other. Emitting them
+    // here is what makes "the events emitted are the transcript" true of the whole log
+    // rather than of the part the loop happened to produce. Identity against the log we
+    // were handed, because `answerInterrupted` returns the same objects where it adds
+    // nothing, so nothing already stored is emitted a second time.
+    const held = new Set<Event>(prior);
+    for (const event of this.#events) if (!held.has(event)) this.#emit(event);
   }
 
   /** The transcript as it stands. A copy: the log is appended to here and nowhere else. */
@@ -85,7 +113,7 @@ export class Runtime {
 
   /** Take a message from the parent, and work until there is an answer for it. */
   async turn(content: string): Promise<string> {
-    this.#events.push({ type: 'message', at: this.#at(), from: 'parent', content });
+    this.#append({ type: 'message', at: this.#at(), from: 'parent', content });
     return this.run();
   }
 
@@ -110,22 +138,22 @@ export class Runtime {
       // agent's own words, then the calls it made. All three fold into one assistant
       // message, and a different order here would be different bytes on the wire.
       if (step.reasoning !== null) {
-        this.#events.push({ type: 'reasoning', at: this.#at(), ...step.reasoning });
+        this.#append({ type: 'reasoning', at: this.#at(), ...step.reasoning });
       }
       if (step.content !== '') {
-        this.#events.push({ type: 'message', at: this.#at(), from: 'self', content: step.content });
+        this.#append({ type: 'message', at: this.#at(), from: 'self', content: step.content });
       }
       // A refusal is the agent's message too — the model was asked for something and said
       // what it would not do. Recorded as one so a parent reading the transcript finds an
       // answer where the turn ended, and so the projection has it to replay; the flag is
       // what keeps it out of `content` on the way back. See `events.ts`.
       if (step.refusal !== null) {
-        this.#events.push({ type: 'message', at: this.#at(), from: 'self', content: step.refusal, refusal: true });
+        this.#append({ type: 'message', at: this.#at(), from: 'self', content: step.refusal, refusal: true });
       }
       for (const call of step.calls) {
-        this.#events.push({ type: 'tool_call', at: this.#at(), id: call.id, name: call.name, arguments: call.arguments });
+        this.#append({ type: 'tool_call', at: this.#at(), id: call.id, name: call.name, arguments: call.arguments });
       }
-      this.#events.push({ type: 'usage', at: this.#at(), ...step.usage });
+      this.#append({ type: 'usage', at: this.#at(), ...step.usage });
 
       // Content with nothing outstanding is the whole of the ending. A model that produced
       // neither content nor a call has also ended it — there is nothing to take another
@@ -136,7 +164,7 @@ export class Runtime {
 
       for (const call of step.calls) {
         const result = await dispatch(this.#registry, call, signal, this.#clock);
-        this.#events.push({
+        this.#append({
           type: 'tool_result',
           at: this.#at(),
           id: call.id,
@@ -146,6 +174,18 @@ export class Runtime {
         });
       }
     }
+  }
+
+  /**
+   * The one place the log grows, which is what makes emission structural.
+   *
+   * A `push` elsewhere would be an event the log carries and nothing outside the process
+   * ever hears about — and the failure would be a resumed agent quietly missing a step,
+   * which looks exactly like an agent that behaved.
+   */
+  #append(event: Event): void {
+    this.#events.push(event);
+    this.#emit(event);
   }
 
   #at(): string {

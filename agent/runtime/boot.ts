@@ -28,6 +28,21 @@ import type { Readable } from 'node:stream';
 export interface BootFrame {
   record: AgentRecord;
   events: Event[];
+  /**
+   * Whether this body owes the model a step, said by whoever booted it.
+   *
+   * **It is on the frame because it is not in the log.** Three situations leave logs that
+   * are indistinguishable — an agent suspended on purpose, one killed mid-call, and one
+   * whose turn ended in a step its supervisor never heard about — and which of them this is
+   * lives in the supervisor's stored state, which is exactly where the design put it and
+   * exactly why it stored it rather than inferring it.
+   *
+   * Absent means no: a body booted with nothing to say about this waits to be given
+   * something. That is what every caller outside the supervisor wants, and it is the safe
+   * half — an agent that waits when it should have stepped is woken by its next message,
+   * while one that steps when it should have waited has taken a step nobody asked for.
+   */
+  owed: boolean;
 }
 
 /** What a frame that could not be read is reported as. */
@@ -137,6 +152,7 @@ export async function readBootFrame(input: Readable): Promise<BootFrame> {
       // Absent and empty mean the same thing: an agent that has not yet run. A supervisor
       // starting a fresh agent should not have to spell out that nothing has happened.
       events: parseEvents(frame.events ?? []),
+      owed: frame.owed === true,
     };
   } catch (cause) {
     if (cause instanceof RecordError || cause instanceof EventLogError) {

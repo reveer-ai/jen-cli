@@ -4,6 +4,12 @@
 # on purpose: a source file added under agent/ stays trackable with no edit here.
 /agent/node_modules/
 
+# a run's records and transcripts. They live in the project folder so the project stays
+# reconstructible from it alone, and they are not versioned: transcripts are large and
+# append constantly, and committing them would bury every source change under a wall of
+# them. Narrow on purpose — `.jen/` is left free for anything that should be tracked
+/.jen/runs/
+
 # build output: compiled CLI and the payload staged into dist/templates/ at pack time
 /dist/
 *.tgz

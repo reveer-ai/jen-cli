@@ -31,10 +31,19 @@ The configs are the substrate's own and do not extend the repository's, on purpo
 root `tsconfig.json` sets `rootDir: "cli"` and `outDir: "dist"`, and `dist/` is what the
 published tarball is built from.
 
-## The sandbox tests need a running container runtime
+## Two suites need a running container runtime
 
 `sandbox/docker.test.ts` drives a real one. Nothing in it is mocked, because a driver whose
 only job is to drive another program proves nothing against a stub of that program.
+
+`supervisor/containers.test.ts` is the supervisor's integration tier and needs one too. Three
+of its assertions are about containers rather than about the state machine — that a fully
+dormant tree holds none, that an agent which asked to stay resident still holds its own, and
+that a run killed with containers live is swept and resumes — and a test double cannot make
+any of them, because the double is what decides what `docker ps` would have said. Its agents
+are a shell peer rather than the real runtime, so it needs no image beyond the `sh` a sandbox
+already has to provide; one of its tests starts a supervisor in a detached process group and
+`kill -9`s the group, because a test cannot do that to the process it is running in.
 
 - Start the runtime first. On Docker Desktop, `docker desktop start`, then check with
   `docker version --format '{{.Server.Version}}'`. The suite fails in `beforeAll` with a
@@ -43,6 +52,23 @@ only job is to drive another program proves nothing against a stub of that progr
 - Everything it creates is labelled `jen.run=<a per-run id>` and swept in `afterAll`. If a
   run is killed mid-way, `docker ps -a --filter label=jen.run` and
   `docker volume ls --filter label=jen.run` find what it left.
+- **Ending a process's input is the caller's job, and a test that forgets hangs rather than
+  fails.** `exec` writes the credential block and whatever `input` it was given, and then
+  leaves the pipe open — that is the point of it. So a reader like `cat` never sees EOF, and
+  awaiting `process.exit` without `stdin.end()` waits for the whole `testTimeout` and reports
+  a timeout naming nothing. Three tests written before the input stayed open failed exactly
+  this way, five minutes each, and the run gave no other sign of what was wrong. If a test
+  here hangs, that is the first thing to check.
+
+## Neither suite runs anywhere but on a machine someone started a runtime on
+
+Nothing in CI runs either of them, so a change to `sandbox/` or `supervisor/` can be
+typechecked, reviewed, merged, and still be the first thing to break when somebody finally
+has a daemon. That is not hypothetical: the change that opened the input contradicted three
+of `docker.test.ts`'s existing tests, and design, implementation and review all passed over
+it because no runtime was reachable on any of those machines. **Run both before claiming a
+change to either directory works**, and if you cannot, say so in those words rather than
+reporting the suites you could run as though they were the suite.
 
 ## How a credential gets in, and the three ways that look right and are not
 

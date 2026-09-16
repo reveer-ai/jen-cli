@@ -76,8 +76,27 @@ describe('the interface exposes only what it needs', () => {
     expect(members('Sandbox')).toEqual(['exec', 'destroy']);
   });
 
-  it('gives a driver creation and workspace release, and nothing else', () => {
-    expect(members('SandboxDriver')).toEqual(['create', 'releaseWorkspace']);
+  it('gives a driver creation, workspace release and a run’s release, and nothing else', () => {
+    expect(members('SandboxDriver')).toEqual(['create', 'releaseWorkspace', 'destroyAll']);
+  });
+
+  /**
+   * The fifth operation is the one that could destroy a day of an agent's work by being
+   * spelled slightly too widely, so what it takes is read as well as that it exists. A
+   * parameter here would be a run id, and a driver already knows its own — a caller able to
+   * name one is a caller able to name another run's.
+   */
+  it('gives the run’s release no argument to get wrong', () => {
+    expect(DECLARATIONS).toMatch(/\bdestroyAll\(\): Promise<void>;/);
+  });
+
+  it('gives a process its output, its input and its ending, and nothing else', () => {
+    expect(members('Process')).toEqual(['stdout', 'stderr', 'stdin', 'exit']);
+  });
+
+  it('gives sending a way to fail that is not an uncaught error', () => {
+    expect(members('Input')).toEqual(['send', 'end']);
+    expect(DECLARATIONS).toMatch(/send\(text: string\): Promise<void>;/);
   });
 
   it('declares no network configuration operation', () => {
