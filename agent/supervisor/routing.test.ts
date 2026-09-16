@@ -16,14 +16,22 @@ afterEach(async () => {
   for (const run of runs.splice(0)) await run.end();
 });
 
-/** A root, and however many children below it, each already resident and at a boundary. */
+/**
+ * A root, and however many children below it, each already resident and at a boundary.
+ *
+ * Every agent here is granted `spawn` and `stop`, because the supervisor reads the caller's
+ * record before carrying either out and a tree of agents holding neither could only ever be
+ * asked about refusals. What a record has to *say* for a spawn to be accepted is
+ * `spawn.test.ts`'s subject; this file is about what happens once it is.
+ */
 async function aTree(children = 0, opening = 'Begin.'): Promise<Run> {
   const run = await aRun();
   runs.push(run);
-  await run.supervisor.add(aRecord({ id: 'a', parent: null }), opening);
+  const tools = ['spawn', 'stop'];
+  await run.supervisor.add(aRecord({ id: 'a', parent: null, tools }), opening);
 
   for (let at = 1; at <= children; at++) {
-    await run.supervisor.add(aRecord({ id: `a-${at}`, parent: 'a' }), 'Begin.');
+    await run.supervisor.add(aRecord({ id: `a-${at}`, parent: 'a', tools }), 'Begin.');
   }
   return run;
 }
@@ -293,15 +301,22 @@ describe('an agent spawns a child, and the child is an agent like any other', ()
    * The id is the supervisor's, because an agent naming its own child's could name one that
    * already exists — and two agents sharing an id share a workspace, a transcript and a
    * mailbox.
+   *
+   * It used to be taken and quietly overwritten, which held the property and told the caller
+   * nothing. A refusal holds it and says so, which matters because a parent that named an id
+   * is a parent that is about to address its child by that id.
    */
-  it('names the child itself, whatever the parent asked for', async () => {
+  it('refuses a spawn that tries to name the child’s id, rather than overwriting it', async () => {
     const run = await aTree();
     const peer = run.driver.latest('a')!;
     await peer.until(() => peer.messages().length > 0);
 
     peer.ask('a:1', 'spawn', { id: 'a', name: 'impostor', charter: 'Take over.' });
     await peer.until(() => peer.answers().size === 1);
-    expect(peer.answers().get('a:1')?.content).toBe('a-1');
+
+    expect(peer.answers().get('a:1')?.ok).toBe(false);
+    expect(peer.answers().get('a:1')?.content).toMatch(/`id`/);
+    expect(run.store.agent('a').children).toEqual([]);
   });
 
   it('refuses a spawn that says nothing about what the child is for', async () => {

@@ -16,10 +16,11 @@
  * supervisor and wait for the answer. {@link dispatch} cannot tell them apart and neither
  * can the model — so an agent never *holds* the ability to spawn, it only asks.
  *
- * **Nothing independently exercises this interface in this change**, because no capability
- * ships in it. That is the sandbox's one-driver problem again and it gets the same answer:
- * a trivial capability in the test suite, plus the requirement that an empty registry be
- * valid, which is what forces the loop to have no capability-specific branch to begin with.
+ * **Every capability that ships is a supervised one**, so this interface's other half — a
+ * capability that does real work inside the sandbox — is exercised only by the test suite's
+ * own. That is the sandbox's one-driver problem again and it gets the same answer: a trivial
+ * capability in the tests, plus the requirement that an empty registry be valid, which is
+ * what forces the loop to have no capability-specific branch to begin with.
  */
 
 /** What an invocation produced. `ok` is for the transcript; the model sees `content`. */

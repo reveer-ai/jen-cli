@@ -34,13 +34,103 @@ import type { Raise, SupervisedCapability } from './supervised.ts';
 /**
  * The capabilities this runtime asks the supervisor for.
  *
- * **Empty, and this is the seam rather than a placeholder.** `spawn` and `stop` are
- * ENG-197's, `send` and `await` are ENG-198's, `read` is ENG-212's; each arrives as one
- * entry here and nothing else in this file changes. Leaving it empty keeps the behaviour
- * `agent-runtime` specified — a record naming a capability fails construction rather than
- * starting an agent reduced — while settling the shape before five are written against it.
+ * **Declarations and nothing else.** Each entry is a name, a description the model reads,
+ * and a JSON Schema for its input; `supervised()` turns it into something `dispatch` cannot
+ * tell from work done inside the sandbox. There is no `spawn` branch in the loop, in the
+ * dispatcher or in the protocol, and adding `send`, `await` and `read` is three more
+ * entries here and nothing else in this file — which is what keeps a runtime at depth four
+ * byte-identical to the one nobody spawned.
+ *
+ * **Registering is not granting.** `resolveCapabilities` builds an agent's registry from
+ * its *record*, so an agent whose record does not name `spawn` is never offered it, and an
+ * agent whose record does is offered the same declaration its parent was. The supervisor
+ * checks the record again at the request boundary, because a schema is a guide to the model
+ * and not a trust boundary — a raw frame reaches the supervisor without passing through any
+ * of this.
+ *
+ * **The schemas are written for a reader who has only them.** A model choosing what to put
+ * in `tools` cannot see the supervisor's subset rule, so the description says it; a model
+ * that would otherwise send a whole model configuration is told that `model` is an
+ * identifier and that the endpoint and credential are not its to choose. Every one of these
+ * is enforced at the supervisor regardless. Saying it here is what makes a refusal rare
+ * rather than what makes it safe.
  */
-const SUPERVISED: SupervisedCapability[] = [];
+const SUPERVISED: SupervisedCapability[] = [
+  {
+    name: 'spawn',
+    description:
+      'Create a new agent below you and return its id, without waiting for it to do anything. ' +
+      'Use it to delegate work you want done beside your own, and spawn several before you ' +
+      'collect any of them. The child is an agent exactly like you: it reasons with a model, ' +
+      'holds a workspace, and can spawn agents of its own if you grant it `spawn`. It reaches ' +
+      'the same provider under the same credentials you do, and you never see or supply those. ' +
+      'The id it returns is how you address the child afterwards.',
+    schema: {
+      type: 'object',
+      properties: {
+        name: {
+          type: 'string',
+          minLength: 1,
+          description: 'What to call the child, for you and anyone reading the transcript.',
+        },
+        charter: {
+          type: 'string',
+          minLength: 1,
+          description:
+            'What the child is for. It becomes the first thing in its conversation and never ' +
+            'changes, so write what would still be true at the end of its work.',
+        },
+        opening: {
+          type: 'string',
+          minLength: 1,
+          description:
+            'The first message to send it, as though you had sent it yourself. Leave this out ' +
+            'to create the child without starting it; it waits until you address it.',
+        },
+        tools: {
+          type: 'array',
+          items: { type: 'string' },
+          uniqueItems: true,
+          description:
+            'The capabilities the child may reach. Every one must be a capability you hold ' +
+            'yourself — you can create an agent narrower than you or equal to you, never a ' +
+            'wider one, and a name you do not hold is refused rather than dropped. Leaving ' +
+            'this out grants none, including `spawn`.',
+        },
+        model: {
+          type: 'string',
+          minLength: 1,
+          description:
+            'Which model the child reasons with, as the provider spells it. Leave it out to ' +
+            'give it yours. This is an identifier only: the provider, the endpoint and the ' +
+            'credential are inherited from you and cannot be set here.',
+        },
+      },
+      required: ['name', 'charter'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'stop',
+    description:
+      'Dismiss one of your own children, and with it every agent below that child. Their ' +
+      'bodies end; their records, transcripts and workspaces are kept, so whatever they built ' +
+      'is still there to read. A child that has reported to you is not finished — it is ' +
+      'waiting, and stays available until you stop it. You can only stop your own children.',
+    schema: {
+      type: 'object',
+      properties: {
+        id: {
+          type: 'string',
+          minLength: 1,
+          description: 'The id of the child to dismiss, as `spawn` returned it.',
+        },
+      },
+      required: ['id'],
+      additionalProperties: false,
+    },
+  },
+];
 
 /** One frame out, as one line. Every write in this file goes through here. */
 function say(frame: FromAgent): void {

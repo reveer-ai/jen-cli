@@ -605,3 +605,150 @@ describe('a failure at the entry point says what it was, and not in a stack trac
     await peer.stop();
   });
 });
+
+/**
+ * `spawn` and `stop`, from the model's side of the real entry point.
+ *
+ * This is the one place the registered declarations are exercised as the program actually
+ * carries them: a record selects them, the client puts them on the wire, the model calls
+ * one, and what comes back out of the process is an ordinary request frame. The supervisor's
+ * half — what it does with that frame — is `supervisor/spawn.test.ts`'s.
+ *
+ * **What it is really holding is that there is no spawn path.** The entry point does not
+ * know what spawning is: the call becomes a request because `supervised()` made it one, and
+ * the answer becomes a tool result because `dispatch` cannot tell it from work done in the
+ * sandbox. If the SDK's tool runner were ever used instead, the process would dispatch the
+ * call itself and **no request frame would appear here at all** — so the frame these tests
+ * wait for is the observable form of that rule. `model.test.ts` guards the same rule over
+ * the source, which is what catches a runner used for a capability nothing tests.
+ */
+describe('a capability the agent does not hold is offered, called, and answered', () => {
+  /** The model calling `spawn`, as a gateway reports one. */
+  const SPAWNS = {
+    role: 'assistant',
+    content: null,
+    refusal: null,
+    annotations: [],
+    tool_calls: [
+      {
+        id: 'call-1',
+        type: 'function',
+        function: { name: 'spawn', arguments: '{"name":"scout","charter":"Look around.","opening":"Begin."}' },
+      },
+    ],
+  };
+
+  /** The same for `stop`, which is answered with a refusal rather than an id. */
+  const STOPS = {
+    role: 'assistant',
+    content: null,
+    refusal: null,
+    annotations: [],
+    tool_calls: [{ id: 'call-1', type: 'function', function: { name: 'stop', arguments: '{"id":"a-9"}' } }],
+  };
+
+  /** The declarations the provider was sent, by name, on the request numbered `at`. */
+  function offered(at: number): string[] | undefined {
+    const sent = received[at]?.body as { tools?: { function: { name: string } }[] };
+    return sent.tools?.map((tool) => tool.function.name);
+  }
+
+  /** The first request frame the process raised, or nothing if it raised none. */
+  function raised(peer: Peer): Extract<FromAgent, { t: 'request' }> | undefined {
+    return peer.frames.find((frame) => frame.t === 'request');
+  }
+
+  it('offers exactly the capabilities the record names, in the order it names them', async () => {
+    const peer = start({ tools: ['stop', 'spawn'] });
+    await peer.tell('Say something.');
+
+    // The record's order, not the registry's, because a re-ordered declaration list is a
+    // prompt-cache miss on every resume rather than a cosmetic difference.
+    expect(offered(0)).toEqual(['stop', 'spawn']);
+    await peer.stop();
+  });
+
+  /**
+   * Registering is not granting, which is the half that keeps unequal authority in the
+   * record. Both processes run the same bytes; one is offered a capability and one is not.
+   */
+  it('offers only the one a record names, though both are registered', async () => {
+    const peer = start({ tools: ['stop'] });
+    await peer.tell('Say something.');
+    expect(offered(0)).toEqual(['stop']);
+    await peer.stop();
+  });
+
+  it('turns the model’s spawn call into a supervisor request carrying what it asked for', async () => {
+    replies = [SPAWNS, ORDINARY];
+    const peer = start({ tools: ['spawn'] });
+    peer.write({ t: 'message', content: 'Delegate this.' });
+
+    await peer.until(() => raised(peer) !== undefined);
+    const request = raised(peer)!;
+    expect(request.kind).toBe('spawn');
+    expect(request.input).toEqual({ name: 'scout', charter: 'Look around.', opening: 'Begin.' });
+    // Nothing was asked about the body: `spawn` is not a suspension, and zero is how the
+    // absence of a request is written rather than something the supervisor fills in.
+    expect(request.residency).toBe(0);
+
+    // Not dispatched locally, which is the whole of it: the process is sitting on a call it
+    // cannot answer, and has taken no second step.
+    expect(received).toHaveLength(1);
+    await peer.stop();
+  });
+
+  it('gives the model the supervisor’s answer as an ordinary tool result on its next step', async () => {
+    replies = [SPAWNS, ORDINARY];
+    const peer = start({ tools: ['spawn'] });
+    peer.write({ t: 'message', content: 'Delegate this.' });
+    await peer.until(() => raised(peer) !== undefined);
+
+    peer.write({ t: 'answer', id: raised(peer)!.id, ok: true, content: 'a-1' });
+    await peer.until(() => peer.turns.length > 0);
+
+    const sent = received[1]?.body as { messages: Record<string, unknown>[] };
+    expect(sent.messages.at(-1)).toEqual({ role: 'tool', tool_call_id: 'call-1', content: 'a-1' });
+    expect(peer.events).toMatchObject([
+      { type: 'charter' },
+      { type: 'message', from: 'parent' },
+      { type: 'tool_call', name: 'spawn' },
+      { type: 'usage' },
+      { type: 'tool_result', id: 'call-1', ok: true, content: 'a-1' },
+      { type: 'message', from: 'self' },
+      { type: 'usage' },
+    ]);
+    await peer.stop();
+  });
+
+  /**
+   * A refused capability is a result, not a failure. The agent reads what the supervisor
+   * said and takes another step on it — which is what makes a refusal something the weights
+   * can act on rather than something that ends a turn.
+   */
+  it('carries a refusal back to the model and lets the turn continue', async () => {
+    replies = [STOPS, ORDINARY];
+    const peer = start({ tools: ['stop'] });
+    peer.write({ t: 'message', content: 'Dismiss it.' });
+    await peer.until(() => raised(peer) !== undefined);
+
+    expect(raised(peer)!.kind).toBe('stop');
+    expect(raised(peer)!.input).toEqual({ id: 'a-9' });
+    peer.write({
+      t: 'answer',
+      id: raised(peer)!.id,
+      ok: false,
+      content: '"a-9" is not one of your children, so nothing was stopped.',
+    });
+
+    await peer.until(() => peer.turns.length > 0);
+    expect(peer.turns).toEqual(['There is nothing here but thought.']);
+    expect(peer.events.find((event) => event.type === 'tool_result')).toMatchObject({
+      id: 'call-1',
+      ok: false,
+      content: '"a-9" is not one of your children, so nothing was stopped.',
+    });
+    expect(peer.stderr).toBe('');
+    await peer.stop();
+  });
+});

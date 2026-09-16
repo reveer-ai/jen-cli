@@ -6,10 +6,10 @@
  * the model** — which is what `capability.ts` was written to hold, and what keeps an agent
  * from ever *holding* the ability to spawn rather than only asking for it.
  *
- * **Nothing here is registered.** `agent-runtime` leaves the capability set empty and this
- * change does not fill it: `spawn` and `stop` are ENG-197's, `send` and `await` are
- * ENG-198's, and `read` is ENG-212's. What this defines is how one of them is built, so the
- * shape is settled before five of them are written against it rather than after.
+ * **Nothing is registered here.** The registry is `main.ts`'s, which is where `spawn` and
+ * `stop` are declared and where `send`, `await` and `read` will be. What this defines is how
+ * one of them is built — and the shape held for five capabilities written against it after
+ * the first two, rather than being settled by whichever of them was written first.
  */
 import type { Capability, CapabilityResult } from './capability.ts';
 

@@ -595,21 +595,81 @@ export class Supervisor {
     await this.#settle();
   }
 
-  /** A child, built from what the parent asked for and from the parent's own record. */
+  /**
+   * A child, built from what the parent asked for and from the parent's own record.
+   *
+   * **The request is a requested configuration, not a record.** A caller names what its
+   * child is *for* and what it may reach; everything that decides what the child can
+   * actually get at — its id, its parentage, its credentials, its environment, its workspace
+   * and the endpoint its model is behind — is constructed here from the parent's own record.
+   * Accepting a record and overwriting two fields of it would put construction policy on
+   * both sides of the channel and make parentage and credentials caller-supplied in every
+   * case nobody thought to overwrite.
+   *
+   * **Every check is here rather than in the schema the model was shown.** A schema is a
+   * guide to a model; a raw frame reaches this method without passing through one, and the
+   * agent that would send a raw frame is precisely the one whose request should not be
+   * trusted. So the grant, the fields, the tool subset and the model identifier are all read
+   * again here — and every one of those refusals happens **before** anything is stored, so a
+   * spawn refused for what it *said* leaves no record, no parent link and no sandbox behind.
+   * A spawn that fails while provisioning the child's body is not that, and the difference
+   * bites: see `AGENTS.md` beside this file.
+   *
+   * **Nothing is filtered, substituted or ignored.** A tool the parent does not hold, a
+   * duplicate, a `model` that is an object rather than an identifier, a field the supervisor
+   * owns — each is refused by name. Silently dropping one creates an agent that cannot do
+   * what its parent asked for and tells the parent it can, which is a lie the parent has no
+   * way to detect; silently honouring one would be worse.
+   */
   async #spawning(id: string, frame: RequestFrame, input: Record<string, unknown>): Promise<void> {
     const parent = this.#store.record(id);
     const agent = this.#store.agent(id);
-    const name = typeof input.name === 'string' ? input.name : null;
-    const charter = typeof input.charter === 'string' ? input.charter : null;
+    const refuse = (content: string): Promise<void> =>
+      this.#say(id, { t: 'answer', id: frame.id, ok: false, content });
 
-    if (name === null || charter === null) {
-      return this.#say(id, {
-        t: 'answer',
-        id: frame.id,
-        ok: false,
-        content: 'A spawn needs a `name` and a `charter`.',
-      });
+    // The record is what grants a capability, and it is checked here as well as in the
+    // runtime's registry because only one of the two is on the path a raw frame takes.
+    if (!parent.tools.includes('spawn')) {
+      return refuse('Your record does not grant `spawn`, so nothing was spawned.');
     }
+
+    // Supplied and not honoured is the one outcome worth refusing outright: a caller that
+    // named one of these believes it will take effect, and it never can.
+    const owned = OWNED.filter((field) => input[field] !== undefined);
+    if (owned.length > 0) {
+      return refuse(
+        `${owned.map((field) => `\`${field}\``).join(' and ')} ${owned.length === 1 ? 'is' : 'are'} the ` +
+          "supervisor's to set and cannot be named in a spawn, so nothing was spawned.",
+      );
+    }
+
+    const name = phrase(input.name);
+    const charter = phrase(input.charter);
+    if (name === null || charter === null) {
+      return refuse('A spawn needs a non-empty `name` and `charter`.');
+    }
+
+    // Present and empty is refused rather than treated as absent: an opening is what starts
+    // the child, and one with nothing in it boots a body to read nothing at all, where
+    // leaving it out creates a dormant child on purpose. The two are different requests.
+    if (input.opening !== undefined && phrase(input.opening) === null) {
+      return refuse('An `opening` is the first message to the child, so it must be a non-empty string.');
+    }
+    const opening = input.opening === undefined ? undefined : (input.opening as string);
+
+    const tools = requestedTools(input.tools, parent.tools);
+    if (typeof tools === 'string') return refuse(tools);
+
+    // An identifier only. A whole model configuration would let a spawn point the *parent's*
+    // credential at an endpoint of the caller's choosing while reading as a model choice, so
+    // anything that is not a non-empty string is refused rather than reached into.
+    if (input.model !== undefined && phrase(input.model) === null) {
+      return refuse(
+        'A `model` is the identifier of a model at your own provider, so it must be a non-empty string. ' +
+          'The provider, endpoint and credential are inherited and cannot be set by a spawn.',
+      );
+    }
+    const model = input.model === undefined ? parent.model.model : (input.model as string);
 
     // **The id is the supervisor's**, because an agent naming its own child's could name
     // one that already exists — and two agents sharing an id share a workspace, a
@@ -618,18 +678,29 @@ export class Supervisor {
       id: `${parent.id}-${agent.children.length + 1}`,
       name,
       charter,
-      // Inherited unless named, so an agent that says only what its child is for gets one
-      // that can reach the same provider from the same kind of sandbox. Nothing is
-      // *widened* here: `tools` defaults to none rather than to the parent's.
-      model: parent.model,
-      workspace: typeof input.workspace === 'string' ? input.workspace : parent.workspace,
-      environment: typeof input.environment === 'string' ? input.environment : parent.environment,
-      tools: Array.isArray(input.tools) ? (input.tools as string[]).filter((one) => typeof one === 'string') : [],
+      // Inherited but for the identifier, so an agent that says only what its child is for
+      // gets one that can reach the same provider from the same kind of sandbox — and one
+      // that names a model reaches that model at the endpoint it was already using.
+      model: { ...parent.model, model },
+      // The path inside the sandbox, which is the same for every agent; what isolates a
+      // child's work is its own id, which the sandbox keys its workspace on.
+      workspace: parent.workspace,
+      environment: parent.environment,
+      // Never widened, and never silently narrowed either: exactly what was asked for, or a
+      // refusal above. Omitted means none rather than the parent's, so an agent is granted
+      // something only by a parent that chose to grant it.
+      tools,
+      // References, never values. The record stays inert, which is what makes it safe to
+      // persist beside the project and to hand back to a parent that asks what its child is.
       credentials: parent.credentials,
       parent: parent.id,
     };
 
-    const opening = typeof input.opening === 'string' ? input.opening : undefined;
+    // **The answer follows the store, and does not follow the child.** `#add` writes the
+    // record and the parent link, posts the opening into the mailbox and settles — which
+    // starts the child's body where there is something for it to do. It does not wait for a
+    // model step, a report, or anything the child does with what it was given: an id
+    // returned only after the child had finished would make every fan-out a join.
     await this.#add(record, opening);
     await this.#say(id, { t: 'answer', id: frame.id, ok: true, content: record.id });
   }
@@ -643,13 +714,29 @@ export class Supervisor {
    * whose purpose is to end an agent would be the call that leaks containers, and the deeper
    * the subtree the more of them.
    *
-   * **The workspace is kept**, for every agent this reaches, which is the safe default until
-   * something asks otherwise: releasing it is irreversible, and whatever a dismissed agent
-   * built may be exactly what its parent dismissed it for.
+   * **The workspace is kept**, for every agent this reaches, which is the safe default and
+   * this change's answer to the question `design.md` left open: releasing it is
+   * irreversible, whatever a dismissed agent built may be exactly what its parent dismissed
+   * it for, and no request has asked for it to go.
+   *
+   * **A report is not a stop.** A child that has answered its parent is dormant rather than
+   * finished, and stays addressable until this is called for it.
    */
   async #stopping(id: string, frame: RequestFrame, input: Record<string, unknown>): Promise<void> {
     const agent = this.#store.agent(id);
     const target = typeof input.id === 'string' ? input.id : null;
+
+    // The same reading of the record that `#spawning` makes, for the same reason: the
+    // runtime's registry is one of the two places this is checked and a raw frame reaches
+    // only the other one.
+    if (!this.#store.record(id).tools.includes('stop')) {
+      return this.#say(id, {
+        t: 'answer',
+        id: frame.id,
+        ok: false,
+        content: 'Your record does not grant `stop`, so nothing was stopped.',
+      });
+    }
 
     if (target === null || !agent.children.includes(target)) {
       return this.#say(id, {
@@ -867,6 +954,58 @@ export class Supervisor {
       // that ended without speaking is turned into something its parent can act on.
     }
   }
+}
+
+/**
+ * The record fields a spawn may not name, whatever it puts in them.
+ *
+ * Not a list of dangerous strings — a list of the fields whose *value* is the supervisor's
+ * decision. `id` and `parent` are what make parentage something the substrate knows rather
+ * than something an agent asserts; `credentials`, `provider` and `baseURL` are what keep an
+ * inherited secret pointed at the endpoint it was issued for; `environment` and `workspace`
+ * are what a sandbox is built and isolated from. A request naming one is refused rather than
+ * ignored, because a caller that named it expects it to take effect.
+ */
+const OWNED = ['id', 'parent', 'credentials', 'environment', 'workspace', 'provider', 'baseURL'] as const;
+
+/** A string with something in it, or nothing. Whitespace is not a name, charter or model. */
+function phrase(value: unknown): string | null {
+  return typeof value === 'string' && value.trim() !== '' ? value : null;
+}
+
+/**
+ * The child's tools, or why they were refused.
+ *
+ * **Absent is none, never the parent's.** Inheriting would make every child as capable as
+ * its parent without the parent having chosen that, and an agent granted `spawn` by default
+ * is a tree that widens by omission.
+ *
+ * **A name the parent lacks is refused rather than dropped.** Intersecting silently would
+ * acknowledge a child that cannot do what its parent asked for, and the parent would have
+ * no way to find out — it asked for a capable child and was given an id. This is what makes
+ * "this agent cannot do X" a property of the record rather than a hope in a charter: the
+ * authority of a subtree can only ever narrow going down.
+ */
+function requestedTools(requested: unknown, held: readonly string[]): string[] | string {
+  if (requested === undefined) return [];
+  if (!Array.isArray(requested) || requested.some((one) => typeof one !== 'string')) {
+    return '`tools` must be an array of capability names, so nothing was spawned.';
+  }
+
+  const tools = requested as string[];
+  const duplicated = tools.filter((one, at) => tools.indexOf(one) !== at);
+  if (duplicated.length > 0) {
+    return `\`tools\` names ${[...new Set(duplicated)].map((one) => `"${one}"`).join(', ')} more than once, so nothing was spawned.`;
+  }
+
+  const widening = tools.filter((one) => !held.includes(one));
+  if (widening.length > 0) {
+    return (
+      `You do not hold ${widening.map((one) => `"${one}"`).join(', ')}, so you cannot grant ` +
+      `${widening.length === 1 ? 'it' : 'them'} to a child. Nothing was spawned.`
+    );
+  }
+  return tools;
 }
 
 export { Store, StoreError, type AgentState, type Message, type StoredAgent } from './store.ts';
