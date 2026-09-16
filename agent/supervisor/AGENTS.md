@@ -92,6 +92,24 @@ directory stays green: the supervisor still suspends, still resumes, still deliv
 The call that gets answered is found in the log, not from a request id. The id belongs to the
 runtime that raised it, and that runtime is gone.
 
+**Which outstanding call, though, is `at(-1)` — and that is a guess that is right once.**
+`#answerInLog` answers the *last* unanswered `tool_call` in the log. For the first attempt at
+a delivery that is not a guess at all: the agent suspended on the call it raised last, so the
+last outstanding call is the one being answered.
+
+The retry path is where it stops being true. A step that raised two calls — a `send` and then
+an `await` — and was torn down before the `send`'s result was stored leaves *two* outstanding,
+and a boot that failed and is being retried answers `at(-1)`, which is the `await`, with
+whatever the retry is delivering. Delivered-once survives, because the restore is exact. Which
+call was answered does not, and the log stays well-formed, so nothing complains and no test
+fails. Three things have to stack to reach it — two calls in one step, a tear-down between
+them, and a failed boot — which is why it was left rather than fixed.
+
+**If a step is ever allowed to raise two supervisor-backed calls as an ordinary thing, this
+stops being a corner.** The fix is to answer the call the stored state names rather than the
+last one in the log, which means `state.json` carrying the request it suspended on — the same
+answer as everything else here: store it, do not infer it.
+
 ## The sweep ends bodies and must never take a workspace
 
 `destroyAll` runs after a failure, which is **exactly** the moment every agent's work is
@@ -188,6 +206,19 @@ there does not lose one agent, it loses the whole run: every other agent's recor
 transcript, intact on disk and unreachable. Only absence is skipped; a file that is present and
 unreadable still throws, because state is written by rename and a torn one is not a shape this
 produces.
+
+**`ENOENT` is not the only code a thing that is not an agent answers with, and the other one
+is reachable by accident on this platform.** The skip above tests for absence. An entry under
+`agents/` that is present but is not a directory — a `.DS_Store`, which macOS writes into any
+folder someone opens in Finder — makes `readdir` return its name and the read of
+`agents/.DS_Store/record.json` fail with `ENOTDIR`, not `ENOENT`. That throws, and the outcome
+is the one this whole section exists to prevent: the run is unopenable and every intact
+transcript goes with it. Confirmed by reproduction, not reasoning.
+
+So the door this closes is the one a killed supervisor opens, and there is a second door next
+to it that a file browser opens. Widening the skip to cover a non-directory entry is the
+narrow fix; iterating only the entries that are directories is the better one, because it
+stops asking what went wrong and starts asking what an agent is.
 
 ## The human is a participant, not an exception
 
