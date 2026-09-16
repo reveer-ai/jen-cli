@@ -72,16 +72,21 @@
 
 ## 8. The whole thing, against real containers
 
-> **Written, and never run.** No container runtime was reachable on the machine this was
-> implemented on, so `supervisor/containers.test.ts` — and `sandbox/docker.test.ts`, which
-> this change also adds to — have been typechecked and read and not executed. They are left
-> unchecked because an unrun test is not a passing one. Running both suites against a
-> runtime is test-task's, and it is the one thing standing between this change and having
-> been verified where it claims the most.
+> **Run, on a real runtime, by test-task.** Docker 29.4.1. Six defects surfaced on first
+> contact, every one of them in test code and none in the supervisor or the driver, which
+> behaved as their specs describe throughout. Three were in `sandbox/docker.test.ts`, where
+> tests that pre-date this change still asserted the input closing when `exec` had written
+> what the caller gave it — the contract task 1.1 deliberately removes — and hung against the
+> implementation of it. Three were in this change's own `containers.test.ts`: agents added
+> with no opening message so nothing ever booted, a record whose credential could not resolve
+> so nothing could be provisioned, and a wait for a whole tree to be `waiting` at one instant,
+> which this tree never is because a child's report wakes its parent again. The whole agent
+> suite is now 296 across 20 files with a runtime present, and the container tier was repeated
+> three times to confirm it is not flaky. Details are on PR #35 and the issue.
 
-- [ ] 8.1 Test that a fully dormant tree leaves no container running, and that an agent which asked to stay resident still holds its own — the assertion is that each was honoured, not that suspension always tears down.
-- [ ] 8.2 Test that a tree mid-flight survives killing the entire process group and resumes from records and transcripts alone, every agent continuing where it stopped.
-- [ ] 8.3 Test that a killed run is swept, leaves no container, keeps every workspace, and then resumes.
+- [x] 8.1 Test that a fully dormant tree leaves no container running, and that an agent which asked to stay resident still holds its own — the assertion is that each was honoured, not that suspension always tears down.
+- [x] 8.2 Test that a tree mid-flight survives killing the entire process group and resumes from records and transcripts alone, every agent continuing where it stopped.
+- [x] 8.3 Test that a killed run is swept, leaves no container, keeps every workspace, and then resumes.
 
 ## 9. Notes and checks
 

@@ -41,6 +41,23 @@ const IMAGE = 'busybox:stable';
 
 const HARNESS = join(import.meta.dirname, 'harness.ts');
 
+/**
+ * The value `aRecord`'s credential resolves to, supplied by the test rather than found.
+ *
+ * A record is only valid if `model.credential` is among its `credentials`, so the fixture's
+ * reference cannot simply be dropped — and an unresolvable one fails creation by design, so
+ * with the real driver every boot here died in the credential prologue before a container
+ * existed, on any machine without this variable set. Setting it is not the suite reaching
+ * for the environment: the value is this file's own, the way `docker.test.ts` supplies
+ * `JEN_TEST_TOKEN` to the sandboxes it starts. The peer is `sh` and authenticates to
+ * nothing, so what the value *is* never matters — only that it resolves.
+ *
+ * It goes on `process.env` rather than into a driver option because `harness.ts` runs in a
+ * process of its own and builds its own driver; a spawned child inherits this, and a
+ * constructor argument here would never reach it.
+ */
+process.env.JEN_MODEL_API_KEY ??= 'sentinel-not-a-real-key';
+
 const opened: Store[] = [];
 
 async function ask(...args: string[]): Promise<string> {
@@ -100,6 +117,14 @@ beforeAll(async () => {
 
 afterEach(async () => {
   for (const store of opened.splice(0)) await store.close();
+  // Containers only, and never a workspace — `afterAll` is where those go, because one test
+  // reads a workspace back after the run that wrote it has been swept.
+  //
+  // Every test here counts containers by this file's shared run label, so a test that fails
+  // before its own shutdown leaves its tree running and the *next* test counts it too. That
+  // is not a hypothetical: it turned a failure in the resume test into an unrelated-looking
+  // arity mismatch in the sweep test, which cost more to read than the real failure did.
+  for (const id of await lines('ps', '-aq', '--filter', `label=jen.run=${RUN}`)) await ask('rm', '--force', id);
 });
 
 afterAll(async () => {
@@ -126,13 +151,26 @@ describe('a dormant tree holds nothing, and a resident agent holds its own', () 
 
     // A tree rather than three roots: every ancestor of every working agent is idle by
     // construction, which is the shape the whole suspension argument is about.
-    await supervisor.add(aPeerRecord(`${RUN}-chief`, 'GO: finish and ask for nothing.'));
-    await supervisor.add(aPeerRecord(`${RUN}-go`, 'GO: finish and ask for nothing.', `${RUN}-chief`));
-    await supervisor.add(aPeerRecord(`${RUN}-stay`, 'STAY: keep my container.', `${RUN}-chief`));
+    // Each carries an opening, as `harness.ts` does. Without one an agent is added already
+    // `waiting` with an empty mailbox and is never booted at all — so both waits below were
+    // satisfied the instant they were asked, by a tree in which nothing had ever run.
+    await supervisor.add(aPeerRecord(`${RUN}-chief`, 'GO: finish and ask for nothing.'), 'Begin.');
+    await supervisor.add(aPeerRecord(`${RUN}-go`, 'GO: finish and ask for nothing.', `${RUN}-chief`), 'Begin.');
+    await supervisor.add(aPeerRecord(`${RUN}-stay`, 'STAY: keep my container.', `${RUN}-chief`), 'Begin.');
 
+    // Every agent has *reached* a turn's end, rather than never having left the state `add`
+    // creates it in: the peer appends a `usage` event on the message it answers, so a
+    // transcript with one is a body that ran.
     await until(
-      async () => store.ids().every((id) => store.agent(id).state.status === 'waiting'),
-      'every agent suspending',
+      async () =>
+        store.ids().every(
+          (id) =>
+            store.agent(id).state.status === 'waiting' &&
+            store.agent(id).mailbox.length === 0,
+        ) && (await Promise.all(store.ids().map((id) => store.transcript(id)))).every((events) =>
+          events.some((event) => event.type === 'usage'),
+        ),
+      'every agent running and then suspending',
     );
     await until(async () => (await running()).length <= 1, 'the dormant agents’ containers ending');
 
@@ -170,8 +208,20 @@ async function killedMidFlight(root: string, records: AgentRecord[]): Promise<vo
   child.stdout.setEncoding('utf8').on('data', (chunk: string) => (said += chunk));
   child.stderr.setEncoding('utf8').on('data', (chunk: string) => (complained += chunk));
 
+  // Latched from the event rather than asked for after the fact. `close` fires once, and a
+  // supervisor that dies on its own — which is what a misconfigured record does here — fires
+  // it long before the wait below is reached; a listener attached afterwards then never
+  // resolves, and a 60s failure naming the cause on `complained` became an opaque 300s
+  // timeout naming nothing. That is how the credential error above stayed invisible.
+  let closed = false;
+  child.on('close', () => (closed = true));
+
   try {
-    await until(async () => said.includes('ready'), `the tree working (${complained})`);
+    await until(
+      async () => said.includes('ready') || closed,
+      `the tree working (${complained})`,
+    );
+    if (closed) throw new Error(`the supervisor exited before its tree was working: ${complained}`);
     expect((await running()).sort()).toEqual(records.map((record) => record.id).sort());
   } finally {
     try {
@@ -179,7 +229,7 @@ async function killedMidFlight(root: string, records: AgentRecord[]): Promise<vo
     } catch {
       // Already gone, which is the state this was trying to reach anyway.
     }
-    await new Promise((resolve) => child.on('close', resolve));
+    if (!closed) await new Promise((resolve) => child.on('close', resolve));
   }
 
   // The containers outlived it, which is the case the sweep exists for: they are not
@@ -215,15 +265,25 @@ describe('a run killed with containers live is swept, and resumes', () => {
     const supervisor = aSupervisor(reopened);
     await supervisor.resume();
 
+    // **Continuing is the condition, and `waiting` is not a stand-in for it.** The child
+    // ends its resumed turn by reporting to its parent, and a report to a parent at a turn
+    // boundary begins a new turn — so the parent resumes, settles, is woken again by its own
+    // child, and is `working` once more. That is the routing behaving exactly as specified;
+    // waiting for the whole tree to be `waiting` at one instant waits for something this
+    // tree never does, and the peer holds that second turn open forever by design.
     await until(
-      async () => records.every((record) => reopened.agent(record.id).state.status === 'waiting'),
+      async () =>
+        (await Promise.all(records.map((record) => reopened.transcript(record.id)))).every((events) =>
+          events.some((event) => event.type === 'message'),
+        ),
       'both agents continuing where they stopped',
     );
 
     // Continued from the stored transcript rather than starting over: the peer emitted its
     // continuation because its log already carried steps, and the log now carries both.
+    // Checked at the front of the log, since the parent's runs on past it.
     for (const record of records) {
-      expect((await reopened.transcript(record.id)).map((event) => event.type)).toEqual([
+      expect((await reopened.transcript(record.id)).map((event) => event.type).slice(0, 3)).toEqual([
         'charter',
         'usage',
         'message',
@@ -255,7 +315,15 @@ describe('a run killed with containers live is swept, and resumes', () => {
     expect(await running()).toEqual([]);
     expect(await all()).toEqual([]);
 
-    const workspaces = await lines('volume', 'ls', '--filter', `label=jen.run=${RUN}`, '--format', '{{.Name}}');
+    // Asked for by each agent's own marking rather than by the run's. Workspaces outlive
+    // every test in this file — `afterEach` sweeps containers and deliberately not volumes,
+    // because keeping them is the property under test — so a run-wide count here counts
+    // every earlier test's too and fails on a number that says nothing about this one.
+    const workspaces = (
+      await Promise.all(
+        records.map(async (record) => lines('volume', 'ls', '--filter', `label=jen.agent=${record.id}`, '--format', '{{.Name}}')),
+      )
+    ).flat();
     expect(workspaces).toHaveLength(2);
 
     // Resumed after the sweep, each into its own workspace. The peer appends a line every
@@ -266,8 +334,12 @@ describe('a run killed with containers live is swept, and resumes', () => {
     const supervisor = aSupervisor(reopened);
     await supervisor.resume();
 
+    // Continuing, not `waiting`, for the reason given on the resume test above.
     await until(
-      async () => records.every((record) => reopened.agent(record.id).state.status === 'waiting'),
+      async () =>
+        (await Promise.all(records.map((record) => reopened.transcript(record.id)))).every((events) =>
+          events.some((event) => event.type === 'message'),
+        ),
       'both agents continuing after the sweep',
     );
     await supervisor.shutdown();
@@ -276,7 +348,13 @@ describe('a run killed with containers live is swept, and resumes', () => {
       const name = workspaces.find((workspace) => workspace.includes(part));
       expect(name, `${part} has no workspace`).toBeDefined();
       const history = await ask('run', '--rm', '--volume', `${name!}:/w`, IMAGE, 'cat', '/w/history');
-      expect(history.split('\n').filter((line) => line === 'started')).toHaveLength(2);
+      // At least two: the boot before the kill, and the boot after the sweep. **Not exactly
+      // two** — how many times a body starts after that is the routing's business and not
+      // this test's. A parent torn down at its turn's end is booted again when its child
+      // reports, so pinning the count asserts a wake-up sequence in a test about whether the
+      // workspace survived. What is being claimed is that the line written before the kill is
+      // still there and the agent came back to the same volume to add another.
+      expect(history.split('\n').filter((line) => line === 'started').length).toBeGreaterThanOrEqual(2);
     }
   }, 300_000);
 });

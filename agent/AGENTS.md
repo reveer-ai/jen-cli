@@ -52,6 +52,23 @@ already has to provide; one of its tests starts a supervisor in a detached proce
 - Everything it creates is labelled `jen.run=<a per-run id>` and swept in `afterAll`. If a
   run is killed mid-way, `docker ps -a --filter label=jen.run` and
   `docker volume ls --filter label=jen.run` find what it left.
+- **Ending a process's input is the caller's job, and a test that forgets hangs rather than
+  fails.** `exec` writes the credential block and whatever `input` it was given, and then
+  leaves the pipe open — that is the point of it. So a reader like `cat` never sees EOF, and
+  awaiting `process.exit` without `stdin.end()` waits for the whole `testTimeout` and reports
+  a timeout naming nothing. Three tests written before the input stayed open failed exactly
+  this way, five minutes each, and the run gave no other sign of what was wrong. If a test
+  here hangs, that is the first thing to check.
+
+## Neither suite runs anywhere but on a machine someone started a runtime on
+
+Nothing in CI runs either of them, so a change to `sandbox/` or `supervisor/` can be
+typechecked, reviewed, merged, and still be the first thing to break when somebody finally
+has a daemon. That is not hypothetical: the change that opened the input contradicted three
+of `docker.test.ts`'s existing tests, and design, implementation and review all passed over
+it because no runtime was reachable on any of those machines. **Run both before claiming a
+change to either directory works**, and if you cannot, say so in those words rather than
+reporting the suites you could run as though they were the suite.
 
 ## How a credential gets in, and the three ways that look right and are not
 

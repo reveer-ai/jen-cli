@@ -835,6 +835,10 @@ describe('what follows the credential block arrives intact', () => {
 
     const payload = `${JSON.stringify({ record: { id: agent.id }, events: [] })}\n`;
     const started = await sandbox.exec(['sh', '-c', 'printf %s "$AGENT_TOKEN"; printf "|"; cat'], { input: payload });
+    // Ended explicitly, because `exec` no longer ends it. This test pre-dates the input
+    // staying open and read correctly against the old contract, where the pipe closed once
+    // `input` was written and `cat` therefore saw EOF on its own.
+    await started.stdin.end();
     const [out, exit] = await Promise.all([text(started.stdout), started.exit]);
 
     expect(exit.code).toBe(0);
@@ -856,6 +860,7 @@ describe('what follows the credential block arrives intact', () => {
     expect(payload.length).toBeGreaterThan(128 * 1024);
 
     const started = await sandbox.exec(['cat'], { input: payload });
+    await started.stdin.end();
     const [out, exit] = await Promise.all([text(started.stdout), started.exit]);
 
     expect(exit.code).toBe(0);
@@ -866,12 +871,28 @@ describe('what follows the credential block arrives intact', () => {
     await subject.releaseWorkspace(agent.id);
   });
 
-  it('ends the input where it always did when the caller sends nothing after', async () => {
+  /**
+   * Renamed from "ends the input where it always did when the caller sends nothing after",
+   * which asserted the behaviour this change removes: the input no longer ends because the
+   * caller had nothing more at the moment the process started — `agent-sandbox` now says it
+   * SHALL NOT. The property worth keeping from it is the one this describe is about, and it
+   * survives the change: with nothing following the block, the process sees the block's
+   * terminator and not one byte more, and ends cleanly when the caller says so.
+   */
+  it('leaves nothing after the block when the caller sends nothing after', async () => {
     const agent = request({ credentials: [{ name: 'AGENT_TOKEN', ref: 'env:JEN_TEST_TOKEN' }] });
     const subject = delivering();
     const sandbox = await subject.create(agent);
 
-    expect(await inside(sandbox, ['cat'])).toMatchObject({ out: '', code: 0 });
+    // `cat` outlives its caller's silence now, so the ending is asked for rather than
+    // arriving as a side effect — and what it echoes is everything that reached it past the
+    // credential prologue, which must be nothing.
+    const started = await sandbox.exec(['cat']);
+    await started.stdin.end();
+    const [out, exit] = await Promise.all([text(started.stdout), started.exit]);
+
+    expect(out).toBe('');
+    expect(exit.code).toBe(0);
 
     await sandbox.destroy();
     await subject.releaseWorkspace(agent.id);

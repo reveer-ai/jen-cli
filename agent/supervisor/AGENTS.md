@@ -10,6 +10,28 @@ Run its tests with the rest of the substrate's — see [`../AGENTS.md`](../AGENT
 them need nothing but node. `containers.test.ts` is the exception and needs a running
 container runtime, the same as `sandbox/docker.test.ts` and for the same reason.
 
+### Three things `containers.test.ts` will catch you on
+
+All three cost a debugging session the first time this tier was run for real, and none of
+them announces itself — each one produces a tree that looks like it is working.
+
+- **`add(record)` with no opening message boots nothing.** The agent is created already
+  `waiting` with an empty mailbox, which is a perfectly good state and never becomes a
+  container. A test that then waits for "every agent waiting" is satisfied instantly by a
+  tree in which nothing has ever run, and only the container count says otherwise. Pass the
+  opening — `add(record, 'Begin.')` — and wait on something a body had to have produced.
+- **`aRecord`'s credential has to resolve or nothing provisions.** The fixture names
+  `env:JEN_MODEL_API_KEY`, an unresolvable credential fails creation by design, and
+  `record.model.credential` must be among `record.credentials`, so it cannot simply be
+  dropped. The test supplies its own value for it; the peer is `sh` and authenticates to
+  nothing, so only that it resolves matters. It goes on `process.env` because `harness.ts`
+  is a separate process building its own driver.
+- **A whole tree is never `waiting` at one instant, so do not wait for that.** A child ends
+  its turn by reporting to its parent, and a report to a parent at a turn boundary begins a
+  new turn — so the parent settles and is immediately woken again by its own child. Waiting
+  for every agent to be `waiting` together waits for something that does not happen. Wait on
+  the transcript instead: the event the agent appended is what "it continued" actually means.
+
 ## The collision the whole design is built around
 
 `answerInterrupted` answers every capability call a log left outstanding, on every

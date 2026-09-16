@@ -86,9 +86,21 @@ if (process.argv[1]?.endsWith('harness.ts') === true) {
   // Said once, when the tree is in the state the test wants to kill it in. Polling the store
   // rather than reporting each transition, because what the test is waiting for is a
   // property of the whole tree.
-  const settled = (): boolean =>
-    config.records.every((record) => store.agent(record.id).state.status === config.until);
-  while (!settled()) await new Promise((resolve) => setTimeout(resolve, 50));
+  //
+  // **`working` additionally requires a stored step.** An agent becomes `working` the moment
+  // its message is delivered, which is before its body has emitted anything — so a kill on
+  // that signal alone can land on an agent that is mid-turn and has recorded nothing, and
+  // "resumes from records and transcripts alone" then resumes from an empty transcript and
+  // proves much less than it reads as proving. Which side of that race a run landed on
+  // varied between runs, so the test was flaky rather than wrong-and-consistent.
+  const settled = async (): Promise<boolean> => {
+    for (const record of config.records) {
+      if (store.agent(record.id).state.status !== config.until) return false;
+      if (config.until === 'working' && (await store.transcript(record.id)).length === 0) return false;
+    }
+    return true;
+  };
+  while (!(await settled())) await new Promise((resolve) => setTimeout(resolve, 50));
 
   process.stdout.write('ready\n');
   // Held open to be killed. Nothing here ever resolves.
