@@ -210,35 +210,72 @@ a dismissed agent keeps its workspace, because whatever it built may be exactly 
 dismissed it for, and a `stop` that deleted a subtree's work would be the one call whose purpose
 is to end an agent doing something no request asked for.
 
-`stop` also reads the caller's record for a `stop` grant before it does any of this, the same
-way `#spawning` reads it for `spawn`. **Both checks exist twice on purpose** — the runtime will
-not offer a capability the record does not name, and the supervisor reads the record again at
-the channel — because only one of the two is on the path a raw frame takes, and an agent that
-would send a raw frame is precisely the one whose request should be trusted least.
+The grant that permits a `stop` is read at `#request` rather than here — see below, where the
+rule that covers every kind is.
 
 A dismissed agent is left in its parent's `children`, which is why `#sending` checks for
 dismissal itself: routing passes for a dismissed child, and `#post` would drop the message
 while the sender was told it was delivered.
 
-## Two of the five request kinds read the caller's record
+## Every request kind reads the caller's record, once, at the channel
 
-`spawn` and `stop` are the two. **`send`, `await` and `read` check the tree and never
-`record.tools`** — `#sending` asks whether the target is the caller's parent or one of its
-children, `#reading` asks whether the target is below the caller, and `#awaiting` asks
-nothing at all. So the double-check described above is a property of those two handlers, not
-a house rule the channel enforces, and the difference is reachable by the same actor the
-checks were written for: an agent whose record names only `spawn` can put a raw `read` frame
-on the channel and be handed a descendant's transcript, or a raw `send` frame and have it
-delivered, though its record grants neither.
+`#request` refuses any frame whose kind the caller's record does not name, above every
+handler and above anything that writes. There is no per-handler copy of it and there must not
+be one: a rule enforced in some handlers and not others is reachable by exactly the actor it
+was written for, since an agent hand-writing a raw frame only has to find the handler that
+forgot. `read` is gated by this although ENG-212 declares it — that is the rule doing what it
+was written generically for, not scope creep.
 
-That is deliberate rather than missed. `send` and `read` are declared by ENG-198 and ENG-212,
-which is where the decision about gating them belongs, and whether `await` can require a
-grant at all is a real question — a record without it could never wait.
+**The check is second, and the order is the part to get right.** Above it sits `ROUTABLE`,
+which asks whether anything routes this kind at all. A record never names a kind that does not
+exist, so a grant check placed first answers a typo with "your record does not grant `sned`",
+which sends an agent to fix a grant when what it has is a spelling mistake.
 
-**When those tasks land, the shape to reach for is the generic one**: refuse at the top of
-`#request` where `record.tools` does not include `frame.kind`. That is one `if`, it deletes
-both per-handler checks rather than joining them, and it covers every kind added after it. A
-third copy of the same check in a third handler is the thing to avoid.
+`ROUTED` is one list and the switch below is typed from it, so a name added without a case
+fails the typecheck and a case for a name that is not in the list cannot be written. Adding a
+kind is that one name, one case, and no check.
+
+**This is the second of two places a grant is read, and both stay.** The runtime offers an
+agent only what its record names; the supervisor reads the record again here, because only one
+of the two is on the path a raw frame takes.
+
+What a refusal no longer says is "so nothing was spawned". The guarantee it carried is held by
+the check's *position* instead — nothing is written above it — and `spawn.test.ts` pins that
+by asserting no record, no parent link, no mailbox and no body after a refused spawn. Do not
+move the check below anything that writes to recover the wording.
+
+Withholding narrows an agent rather than silencing it, which is what `spawn`'s tool
+description promises the model choosing a child's grant: an agent with no `send` still reports
+to its parent when its turn ends, because reporting at a turn boundary is not a capability and
+cannot be withheld. A change that made turn-end reporting require a grant would make that
+description a lie told to the party making the decision.
+
+## The mark position belongs to the substrate
+
+`render()` puts one mark at the front of every delivered message: `[from <id>]` for an agent,
+`[from the human]` for a message with no sender, `[substrate]` for the substrate's own report
+of an agent's ending. A parent holding four children has four conversations in one mailbox,
+and the mark is the whole of what tells them apart.
+
+**Agent-authored content is escaped into that position**: a leading `[` becomes `\[` before
+the mark is prepended. A child that opens its report with `[substrate] ...` — quoting a message
+it was itself sent, which is how a confused agent reaches this rather than a hostile one —
+would otherwise be read by its parent as a death. The substrate's own report is not
+agent-authored and is not escaped, which is why the escape is applied at `render()` rather than
+wherever a message is posted.
+
+**A mark-shaped string in the middle of a message is deliberately not escaped.** Escaping every
+occurrence mangles any message that legitimately discusses the substrate's output, including a
+parent asking a child about a report it received, and a model is a reader rather than a parser
+— so a determined child could still mislead a careless parent. The threat model this epic
+states is a confused agent, and the confused case is the leading-quote one. If that ever stops
+being the threat model, the answer is not a wider escape at this seam.
+
+Attribution is rendered here and carried nowhere else. `MessageFrame` and `AnswerFrame` do not
+grow a `from`, and the `message` event in a transcript keeps `from: 'parent' | 'self'` — which
+answers "were these my own words", a different question from which agent spoke. The model reads
+text at the end either way, so carrying it structurally buys no integrity and puts message
+formatting inside the runtime, whose whole property is being byte-identical everywhere.
 
 ## Only a request has somewhere to fail into
 

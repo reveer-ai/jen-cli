@@ -751,4 +751,78 @@ describe('a capability the agent does not hold is offered, called, and answered'
     expect(peer.stderr).toBe('');
     await peer.stop();
   });
+  /** The model calling `await`, with and without saying anything about its own body. */
+  function awaits(args: string): Record<string, unknown> {
+    return {
+      role: 'assistant',
+      content: null,
+      refusal: null,
+      annotations: [],
+      tool_calls: [{ id: 'call-1', type: 'function', function: { name: 'await', arguments: args } }],
+    };
+  }
+
+  /**
+   * The one declaration that reads something out of the model's own input.
+   *
+   * An agent suspending to wait is the only party that knows whether it is about to be woken
+   * in seconds or in a day, because it has just decided what it dispatched. Anywhere else
+   * this number could come from is a constant about an agent's body that no charter can
+   * reach.
+   */
+  it('carries the period an await named on the request it raises', async () => {
+    replies = [awaits('{"keep":60000}'), ORDINARY];
+    const peer = start({ tools: ['await'] });
+    peer.write({ t: 'message', content: 'Wait for it.' });
+
+    await peer.until(() => raised(peer) !== undefined);
+    expect(raised(peer)!.kind).toBe('await');
+    expect(raised(peer)!.residency).toBe(60_000);
+    await peer.stop();
+  });
+
+  it('carries zero where an await named nothing about its body', async () => {
+    replies = [awaits('{}'), ORDINARY];
+    const peer = start({ tools: ['await'] });
+    peer.write({ t: 'message', content: 'Wait for it.' });
+
+    await peer.until(() => raised(peer) !== undefined);
+    // The absence of a request rather than a default, which is why it is written here and
+    // not left for the supervisor to fill in.
+    expect(raised(peer)!.residency).toBe(0);
+    await peer.stop();
+  });
+
+  /**
+   * Nothing validates a call's arguments against the schema it was declared with, and a
+   * residency that is not a duration makes the request frame unreadable at the supervisor —
+   * so an agent that misspelled its own `keep` would raise an `await` that never returns
+   * rather than one that kept nothing.
+   */
+  it('carries zero where an await named something that is not a duration', async () => {
+    replies = [awaits('{"keep":"a while"}'), ORDINARY];
+    const peer = start({ tools: ['await'] });
+    peer.write({ t: 'message', content: 'Wait for it.' });
+
+    await peer.until(() => raised(peer) !== undefined);
+    expect(raised(peer)!.residency).toBe(0);
+    await peer.stop();
+  });
+
+  /**
+   * Both new declarations are reachable and neither is more than a declaration: registering
+   * one grants nothing, and the runtime offers exactly what the record names.
+   */
+  it('offers send and await to a record that names them, and nothing to one that does not', async () => {
+    const both = start({ tools: ['send', 'await'] });
+    await both.tell('Say something.');
+    expect(offered(0)).toEqual(['send', 'await']);
+    await both.stop();
+
+    received = [];
+    const neither = start({ tools: ['spawn'] });
+    await neither.tell('Say something.');
+    expect(offered(0)).toEqual(['spawn']);
+    await neither.stop();
+  });
 });
