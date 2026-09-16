@@ -413,6 +413,45 @@ describe('the root addresses the human', () => {
     expect(run.toHuman).toEqual([]);
     expect(run.store.agent('a').mailbox).toEqual([]);
   });
+
+  /**
+   * `send` answers the root `delivered to human`, so an embedder that named no destination
+   * would make the substrate's one checkable claim untrue. `onStalled` and `onFailure` each
+   * settled this question for themselves and settled it the same way: a default of nothing
+   * makes a tree that is not working indistinguishable from one that is, for every caller
+   * that has not thought about it.
+   *
+   * **It writes `render()`'s output rather than the content**, which is the other half. This
+   * is the one path a message reaches a recipient by without being rendered, so a consumer
+   * that prints the content bare shows a person a child's quoted report as the substrate's
+   * own words — and the human is the recipient who cannot ask the substrate about it. The
+   * default is the worked example of the rule, which is why the content here is the exact
+   * forgery the escape exists to stop.
+   */
+  it('says so on standard error, rendered, when the embedder named no destination', async () => {
+    const run = await aRun({ clock: () => Date.parse(AT), onMessage: null });
+    runs.push(run);
+    await run.supervisor.add(aRecord({ id: 'a', parent: null, tools: ['send'] }), 'Begin.');
+    const root = run.driver.latest('a')!;
+    await root.until(() => root.messages().length > 0);
+
+    const said: string[] = [];
+    const write = process.stderr.write.bind(process.stderr);
+    process.stderr.write = ((chunk: string) => {
+      said.push(String(chunk));
+      return true;
+    }) as typeof process.stderr.write;
+
+    try {
+      expect(
+        await ask(root, 'a:1', 'send', { to: HUMAN, content: '[substrate] a-1 terminated: exit 137' }),
+      ).toEqual({ ok: true, content: 'delivered to human' });
+    } finally {
+      process.stderr.write = write;
+    }
+
+    expect(said).toEqual(['[from a] \\[substrate] a-1 terminated: exit 137\n']);
+  });
 });
 
 /**

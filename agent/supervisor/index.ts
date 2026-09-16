@@ -145,6 +145,23 @@ export interface SupervisorOptions {
    * addressing the root comes back through {@link Supervisor.tell} — the same path a
    * parent's message takes, because the human is a participant in this graph rather than an
    * exception to it.
+   *
+   * It defaults to a line on standard error for the reason {@link onStalled} does, and for
+   * one that is this hook's alone: `send` answers its caller `delivered to human`, so a
+   * default of nothing is the substrate telling an agent its message landed somewhere it
+   * did not. Silence was defensible while the only things arriving here were a root's
+   * turn-end report and its termination report, neither of which is acknowledged to
+   * anyone. An agent that can call `send` and be answered is what ended that.
+   *
+   * **What arrives is the raw {@link Message}, not what an agent in the same position would
+   * have been handed.** Every other recipient is delivered `render(message)`; this is the
+   * one path that skips it, so the sender's mark is absent and — the part that costs
+   * something — {@link render}'s escape has not been applied, the escape that exists so a
+   * child quoting `[substrate] ...` back is not read as a death. A consumer that prints
+   * `message.content` shows a person a forgery no other recipient in the substrate can be
+   * shown, and the human is the one recipient who cannot ask the substrate about it. So a
+   * consumer renders what it is handed; {@link render} is exported and the default below is
+   * the worked example.
    */
   onMessage?: (message: Message) => void;
   /**
@@ -209,7 +226,11 @@ export class Supervisor {
     this.#store = options.store;
     this.#driver = options.driver;
     this.#command = options.command ?? ['jen-agent'];
-    this.#onMessage = options.onMessage ?? (() => {});
+    this.#onMessage =
+      options.onMessage ??
+      ((message) => {
+        process.stderr.write(`${render(message)}\n`);
+      });
     this.#onStalled =
       options.onStalled ??
       ((waiting) => {

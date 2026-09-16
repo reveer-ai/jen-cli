@@ -338,6 +338,17 @@ chief that cannot say anything to a person until its turn ends — and the resol
 above `#post`, not inside it, because `#post`'s other caller is a termination report whose
 `null` is the tree's and not an agent's word.
 
+**The human's is the one path a message reaches by without passing through `render()`.**
+`#deliver` renders for every agent recipient; `#post`'s `null` branch hands `onMessage` the
+raw `Message`. So at that seam the sender's mark is absent and, more to the point,
+`unmarked()` never runs — the escape that exists so a child opening its report with
+`[substrate] ...` is not read as a death. A human interface that prints `message.content` is
+a person reading a root's quoted `[substrate] a-1 terminated: exit 137` as the substrate
+reporting one, which is the same forgery the escape prevents everywhere else, at the one
+recipient who cannot ask the substrate a follow-up question. `render()` is exported and
+getting it right is one call — so a consumer of `onMessage` renders what it is handed, and
+the supervisor's own default does exactly that rather than printing the content bare.
+
 ## What "surfaced to the human" means for a stalled tree is still open
 
 `onStalled` reports the condition and the supervisor does nothing else: it wakes nobody,

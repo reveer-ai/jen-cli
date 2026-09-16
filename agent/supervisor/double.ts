@@ -281,8 +281,9 @@ export async function aRun(
     clock?: () => number;
     /** `null` leaves the supervisor's own default in place, which is what one test is about. */
     onStalled?: null;
-    /** The same, for the other destination the supervisor defaults to standard error. */
+    /** The same, for the other destinations the supervisor defaults to standard error. */
     onFailure?: null;
+    onMessage?: null;
   } = {},
 ): Promise<Run> {
   const directory = options.directory ?? (await mkdtemp(join(tmpdir(), 'jen-supervisor-')));
@@ -296,7 +297,7 @@ export async function aRun(
     store,
     driver,
     command: ['jen-agent'],
-    onMessage: (message) => toHuman.push(message),
+    ...(options.onMessage === null ? {} : { onMessage: (message: Message) => toHuman.push(message) }),
     ...(options.onStalled === null ? {} : { onStalled: (waiting: readonly string[]) => stalls.push([...waiting]) }),
     ...(options.onFailure === null ? {} : { onFailure: (agent: string, error: unknown) => failures.push({ agent, error }) }),
     ...(options.clock === undefined ? {} : { clock: options.clock }),
