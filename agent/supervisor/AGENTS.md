@@ -110,6 +110,34 @@ stops being a corner.** The fix is to answer the call the stored state names rat
 last one in the log, which means `state.json` carrying the request it suspended on — the same
 answer as everything else here: store it, do not infer it.
 
+## A spawn that cannot provision a body is refused, and the child exists anyway
+
+**`#spawning` refuses nothing after it has written anything, and that reads as a guarantee it
+is not.** Every validation refusal — a missing charter, a widening tool, a model that is not an
+identifier — happens before `#add`, so nothing is created. A failure *provisioning the child's
+body* is the opposite shape and it is reachable in ordinary operation, because a daemon can go
+away between one request and the next.
+
+What happens today, confirmed by driving it rather than by reading:
+
+- `#add` writes the record and the parent link, posts the opening, and then settles. A
+  creation that throws inside that settle propagates out through `#add`, out of `#spawning`,
+  and is turned into an `ok: false` answer by `#listen` — which names the *sandbox* error.
+- So the parent is told its spawn failed, and a complete dormant child is sitting in the store
+  with its opening still in its mailbox.
+- **And every later spawn by that parent is refused with the same error.** `#settle` walks
+  every agent, so the unprovisionable child is retried inside the next request and fails it —
+  while that request's *own* child is created and linked exactly as asked. Two requests, two
+  refusals, two children the parent does not know it has.
+
+Nothing here is new to ENG-197; it is a property of `#settle` being what every request ends
+with. ENG-197 is only the change that first made `spawn` reachable by an agent, which is what
+turns it from a shape in the code into something a tree can actually do. It is left rather than
+fixed because the fix is a decision about what a supervisor owes a caller when settling fails,
+and that answer has to be the same for `send`, `tell` and a turn as it is for `spawn` —
+narrowing it to `spawn` would make the four disagree. `spawn.test.ts` states the behaviour so a
+deliberate change to it fails a test rather than passing quietly.
+
 ## The sweep ends bodies and must never take a workspace
 
 `destroyAll` runs after a failure, which is **exactly** the moment every agent's work is
@@ -177,12 +205,40 @@ that leaks containers, and it leaks more of them the deeper the subtree; `reside
 sweep would be the only things that ever cleaned them up.
 
 Dismissal keeps every workspace it reaches, at every depth. Releasing one is irreversible and
-nothing has asked for it — whether dismissing an agent should release its workspace is ENG-197's
-question, and it is recorded in `design.md` as open rather than answered here.
+nothing has asked for it. ENG-197 settled the question that used to be recorded here as open:
+a dismissed agent keeps its workspace, because whatever it built may be exactly what its parent
+dismissed it for, and a `stop` that deleted a subtree's work would be the one call whose purpose
+is to end an agent doing something no request asked for.
+
+`stop` also reads the caller's record for a `stop` grant before it does any of this, the same
+way `#spawning` reads it for `spawn`. **Both checks exist twice on purpose** — the runtime will
+not offer a capability the record does not name, and the supervisor reads the record again at
+the channel — because only one of the two is on the path a raw frame takes, and an agent that
+would send a raw frame is precisely the one whose request should be trusted least.
 
 A dismissed agent is left in its parent's `children`, which is why `#sending` checks for
 dismissal itself: routing passes for a dismissed child, and `#post` would drop the message
 while the sender was told it was delivered.
+
+## Two of the five request kinds read the caller's record
+
+`spawn` and `stop` are the two. **`send`, `await` and `read` check the tree and never
+`record.tools`** — `#sending` asks whether the target is the caller's parent or one of its
+children, `#reading` asks whether the target is below the caller, and `#awaiting` asks
+nothing at all. So the double-check described above is a property of those two handlers, not
+a house rule the channel enforces, and the difference is reachable by the same actor the
+checks were written for: an agent whose record names only `spawn` can put a raw `read` frame
+on the channel and be handed a descendant's transcript, or a raw `send` frame and have it
+delivered, though its record grants neither.
+
+That is deliberate rather than missed. `send` and `read` are declared by ENG-198 and ENG-212,
+which is where the decision about gating them belongs, and whether `await` can require a
+grant at all is a real question — a record without it could never wait.
+
+**When those tasks land, the shape to reach for is the generic one**: refuse at the top of
+`#request` where `record.tools` does not include `frame.kind`. That is one `if`, it deletes
+both per-handler checks rather than joining them, and it covers every kind added after it. A
+third copy of the same check in a third handler is the thing to avoid.
 
 ## Only a request has somewhere to fail into
 
