@@ -4,7 +4,7 @@
 
 The supervisor SHALL accept a `spawn` request from an agent with the `spawn` capability and SHALL construct the child as the same `AgentRecord` type used for the agent nobody spawned. It SHALL assign the child's id, set its parent to the caller, and SHALL NOT let the caller supply either field. The resulting record SHALL be persisted outside the sandbox with its parentage before the supervisor answers with the id. No root-specific construction path SHALL exist.
 
-The request SHALL name a non-empty name and charter and MAY name an opening message, a tool list, and a model configuration. A missing opening message SHALL create a dormant child; a present opening message SHALL enter the child's mailbox and reach its conversation by the ordinary parent-to-child turn path.
+The request SHALL name a non-empty name and charter and MAY name an opening message, a tool list, and a non-empty reasoning-model identifier string. A missing opening message SHALL create a dormant child; a present opening message SHALL enter the child's mailbox and reach its conversation by the ordinary parent-to-child turn path.
 
 The supervisor SHALL refuse a `spawn` request when the caller's record does not grant `spawn`, even if the request arrives on the channel.
 
@@ -38,9 +38,9 @@ The supervisor SHALL refuse a `spawn` request when the caller's record does not 
 
 ### Requirement: Spawn inherits references and cannot widen authority
 
-A spawned child's environment, workspace path, and credential references SHALL be copied from its parent. The child's sandbox workspace SHALL remain isolated by the child's own id. The child SHALL use the parent's model configuration unless the request supplies a complete replacement that names one of the inherited credential references. Neither the request nor the child record SHALL carry a credential value.
+A spawned child's environment, workspace path, and credential references SHALL be copied from its parent. The child's sandbox workspace SHALL remain isolated by the child's own id. The child SHALL inherit its parent's reasoning-model configuration, with only the `model` identifier replaced when the request supplies one. The request SHALL NOT override the `provider`, `baseURL`, or `credential` fields. This model selection SHALL NOT select or configure a coding assistant, which is a separate capability. Neither the request nor the child record SHALL carry a credential value.
 
-The child's tools SHALL be exactly the requested list if present, or an empty list if omitted. Every requested tool MUST already appear in the parent's tools. A malformed list, a duplicate name, a tool absent from the parent, or a model configuration that does not resolve against the inherited credentials SHALL cause an observable refusal before any child record, parent link, or sandbox is created. The supervisor SHALL NOT silently drop a requested tool or grant a tool the parent lacked.
+The child's tools SHALL be exactly the requested list if present, or an empty list if omitted. Every requested tool MUST already appear in the parent's tools. A malformed list, a duplicate name, a tool absent from the parent, or a malformed or empty model identifier SHALL cause an observable refusal before any child record, parent link, or sandbox is created. The supervisor SHALL NOT silently drop a requested tool or grant a tool the parent lacked.
 
 #### Scenario: A parent grants a narrower child tool set
 
@@ -60,15 +60,16 @@ The child's tools SHALL be exactly the requested list if present, or an empty li
 - **THEN** the supervisor refuses the spawn with a failed capability result naming the tool
 - **AND** no child record, parent link, or sandbox is created
 
-#### Scenario: The child chooses an accessible model
+#### Scenario: The child chooses a model at its parent's endpoint
 
-- **WHEN** a spawn request names a complete model configuration whose credential names a reference carried by the parent
-- **THEN** the child record uses that model configuration and the inherited credential references
-- **AND** no secret value appears in the request or record
+- **WHEN** a spawn request names a non-empty model identifier
+- **THEN** the child record uses that identifier for its reasoning model
+- **AND** its provider, endpoint, and credential reference remain the parent's
+- **AND** its coding-assistant configuration is not changed by the model choice
 
-#### Scenario: The model names an inaccessible credential
+#### Scenario: A model override cannot redirect a credential
 
-- **WHEN** a spawn request names a model credential not among the parent's references
+- **WHEN** a spawn request attempts to provide a model configuration with a different endpoint or credential rather than an identifier string
 - **THEN** the supervisor refuses the spawn before creating a child
 
 ### Requirement: Spawn returns an id without joining the child's work
