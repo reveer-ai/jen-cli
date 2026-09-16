@@ -66,6 +66,20 @@ export class SupervisorError extends Error {
 export const SUBSTRATE = '[substrate]';
 
 /**
+ * What the root calls the agent above it.
+ *
+ * The root's parent is the human, and a human has no agent id to be addressed by — so
+ * messaging upward from the root needs one name, and this is it. Only the root can mean it:
+ * for every other agent it is an ordinary string matching no relation it has, and a child's
+ * id is built from its parent's with a `-`, so no real agent can be addressed by it either.
+ *
+ * It is the name and not the route. The route is `null`, which is what {@link
+ * SupervisorOptions.onMessage} has always been reached by and what a root's own termination
+ * report already travels on; this is only how an agent says it.
+ */
+export const HUMAN = 'human';
+
+/**
  * Who sent it, as the recipient reads it.
  *
  * A parent holding four children has four conversations in one mailbox, and without this it
@@ -623,7 +637,12 @@ export class Supervisor {
     await this.#settle();
   }
 
-  /** A message to this agent's parent or to one of its children, and to nobody else. */
+  /**
+   * A message to this agent's parent or to one of its children, and to nobody else.
+   *
+   * For the root, its parent is the human, addressed by {@link HUMAN} because a person has
+   * no agent id — the one name in this vocabulary that is not one.
+   */
   async #sending(id: string, frame: RequestFrame, input: Record<string, unknown>): Promise<void> {
     const agent = this.#store.agent(id);
     const to = typeof input.to === 'string' ? input.to : null;
@@ -632,15 +651,29 @@ export class Supervisor {
     if (to === null || content === null) {
       return this.#say(id, { t: 'answer', id: frame.id, ok: false, content: 'A send needs a `to` and a `content`.' });
     }
+    // The root addressing the human, which is upward like any other message and needs a name
+    // because the agent above the root is a person. Resolved here, where the routing decision
+    // is, into the `null` `#post` already takes — so the name exists in the vocabulary an
+    // agent speaks and nowhere in the tree.
+    const upward = agent.parent === null && to === HUMAN;
+
     // The topology is a tree, so this is a parent pointer and a list of children. There is
     // no graph here and no route to compute — and a sibling is not reachable by construction
     // rather than by a rule about who may talk to whom.
-    if (to !== agent.parent && !agent.children.includes(to)) {
+    if (!upward && to !== agent.parent && !agent.children.includes(to)) {
+      // Two refusals, because the root is the one agent for which the other one is false.
+      // `agent.parent` is `null` there and no string equals `null`, so the generic wording
+      // would answer a root's every attempt to speak upward by telling it the human is
+      // neither its parent nor its child — the one thing the rest of the substrate is
+      // careful to insist is untrue. What it needs instead is the name it was reaching for.
       return this.#say(id, {
         t: 'answer',
         id: frame.id,
         ok: false,
-        content: `"${to}" is neither your parent nor one of your children, so nothing was sent.`,
+        content:
+          agent.parent === null
+            ? `"${to}" is not one of your children, and the human — who is your parent — is addressed as \`${HUMAN}\`. Nothing was sent.`
+            : `"${to}" is neither your parent nor one of your children, so nothing was sent.`,
       });
     }
 
@@ -650,7 +683,7 @@ export class Supervisor {
     // has made a mistake it can reason about. Checked here, where the routing decision
     // already is, rather than in `#post` — whose other caller is a termination report for an
     // agent that was dismissed while its child was dying, and that one is a genuine drop.
-    if (this.#store.agent(to).state.status === 'dismissed') {
+    if (!upward && this.#store.agent(to).state.status === 'dismissed') {
       return this.#say(id, {
         t: 'answer',
         id: frame.id,
@@ -662,7 +695,7 @@ export class Supervisor {
     // Durable first. `send` is fire-and-forget to the agent that calls it, so an
     // acknowledgement that outran the write would be the substrate lying about the one
     // thing the caller can check.
-    await this.#post(to, { from: id, content });
+    await this.#post(upward ? null : to, { from: id, content });
     await this.#say(id, { t: 'answer', id: frame.id, ok: true, content: `delivered to ${to}` });
     await this.#settle();
   }
@@ -1020,8 +1053,14 @@ export class Supervisor {
  * case fails the typecheck, and a case for a name that is not here cannot be written. That
  * is what keeps the grant check above the switch honest: the kinds it refuses on behalf of
  * are exactly the kinds something handles.
+ *
+ * Exported for one reader: `fixture.ts`'s `EVERY_CAPABILITY`, which is a third copy of this
+ * list that the typecheck above cannot reach. Deriving it there would pull this file into the
+ * import graph of every runtime test that touches the fixture, so `channel.test.ts` asserts
+ * the two agree instead — the drift fails as a named assertion in the fast tier rather than
+ * as a hung container in the slow one.
  */
-const ROUTED = ['await', 'send', 'spawn', 'stop', 'read'] as const;
+export const ROUTED = ['await', 'send', 'spawn', 'stop', 'read'] as const;
 
 type Routed = (typeof ROUTED)[number];
 

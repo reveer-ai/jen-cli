@@ -16,6 +16,13 @@ import type { ModelClient, ModelStep } from './runtime/model.ts';
  * through a shell peer whose script decides what it calls, so there is nothing at the test's
  * own level that could name a narrower set honestly. A unit test is not in that position and
  * should not reach for this — see {@link aRecord}.
+ *
+ * **It is a copy of the supervisor's `ROUTED` and cannot be derived from it here** — the
+ * import would put `supervisor/index.ts` in the graph of every runtime test that touches
+ * this file, to spell a list of five strings. `channel.test.ts` asserts the two agree
+ * instead, which is where a name added to one and not the other fails: as one named
+ * assertion in the fast tier, rather than as `containers.test.ts` timing out on an agent
+ * whose shell peer ignored a refusal and never reached the state the harness waits for.
  */
 export const EVERY_CAPABILITY = ['spawn', 'stop', 'send', 'await', 'read'];
 

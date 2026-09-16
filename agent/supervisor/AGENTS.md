@@ -313,13 +313,30 @@ to it that a file browser opens. Widening the skip to cover a non-directory entr
 narrow fix; iterating only the entries that are directories is the better one, because it
 stops asking what went wrong and starts asking what an agent is.
 
-## The human is a participant, not an exception
+## The human is a participant, not an exception, and `human` is the name
 
 The root's parent is the human. A message the root addresses upward reaches `onMessage`; a
 message from the human comes back through `tell` and takes **the same path** a parent's
 message takes, into the same position in the conversation. There is no separate human
 channel, and adding one would make the root structurally different from every other agent —
 which is the thing the whole substrate is arranged to avoid.
+
+**Upward from the root needs a name, because a human has no agent id.** `#sending` routes on
+a parent pointer and a list of children; the root's pointer is `null` and no string is equal
+to `null`, so until this was resolved, a root granted `send` could reach its children and
+nothing else — and was told so in the words *"is neither your parent nor one of your
+children"*, the substrate contradicting the paragraph above. The name is `HUMAN`, exported
+from `index.ts`, and it is **vocabulary rather than topology**: `#sending` turns it into the
+`null` that `#post` has always taken, so nothing below the request boundary learns a second
+way to say who the human is.
+
+Only the root can mean it. For any other agent `human` is a string matching no relation it
+holds and is refused like any other stranger, and a child's id is its parent's plus a `-`, so
+no agent can be addressed by that name either. Two things follow for anything changing this:
+the refusal a root gets must keep naming `human` — a root that cannot find the word is a
+chief that cannot say anything to a person until its turn ends — and the resolution stays
+above `#post`, not inside it, because `#post`'s other caller is a termination report whose
+`null` is the tree's and not an agent's word.
 
 ## What "surfaced to the human" means for a stalled tree is still open
 

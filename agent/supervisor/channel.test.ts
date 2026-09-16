@@ -11,9 +11,9 @@
  */
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { aRecord } from '../fixture.ts';
+import { aRecord, EVERY_CAPABILITY } from '../fixture.ts';
 import { aRun, until, type Peer, type Run } from './double.ts';
-import { SUBSTRATE } from './index.ts';
+import { HUMAN, ROUTED, SUBSTRATE } from './index.ts';
 
 import type { Event } from '../runtime/events.ts';
 
@@ -326,5 +326,107 @@ describe('a request is refused unless the caller’s record names its kind', () 
     const woken = run.driver.latest('a-1')!;
     await woken.until(() => woken.messages().length > 0, 'the message');
     expect(woken.messages()).toEqual(['[from a] One more thing.']);
+  });
+});
+
+describe('the root addresses the human', () => {
+  /**
+   * What `send` is for that a turn boundary cannot do: saying something while the work is
+   * still going. `#sending` routes on a parent pointer and the root's is `null`, so without a
+   * name for the human the one agent that can speak to a person would be the one agent that
+   * cannot speak upward at all — able to reach its children and nothing else.
+   */
+  it('reaches the human mid-turn, with a child still out', async () => {
+    const run = await aTree(['send', 'await'], 1);
+    const root = run.driver.latest('a')!;
+    const child = run.driver.latest('a-1')!;
+    await child.until(() => child.messages().length > 0, 'the child’s opening');
+
+    expect(await ask(root, 'a:1', 'send', { to: HUMAN, content: 'Started; one child is out.' })).toEqual({
+      ok: true,
+      content: 'delivered to human',
+    });
+
+    expect(run.toHuman).toMatchObject([{ from: 'a', content: 'Started; one child is out.' }]);
+    // Mid-turn, which is the whole point of the path: the root has not reported and is not
+    // waiting, and the report it will eventually make is still ahead of it.
+    expect(run.store.agent('a').state).toEqual({ status: 'working' });
+    // A name and not a broadcast — nothing else in the tree was written to.
+    expect(run.store.agent('a-1').mailbox).toEqual([]);
+  });
+
+  /**
+   * The same path in both directions, which is the property the root is not allowed to be an
+   * exception to. What comes back through `tell` answers the request the root is waiting on,
+   * in the position a parent's message would occupy.
+   */
+  it('is answered by the human through the path a parent’s message takes', async () => {
+    const run = await aTree(['send', 'await']);
+    const root = run.driver.latest('a')!;
+    await root.until(() => root.messages().length > 0);
+
+    expect(await ask(root, 'a:1', 'send', { to: HUMAN, content: 'Which of the two do you want?' })).toMatchObject({
+      ok: true,
+    });
+    expect(run.toHuman).toMatchObject([{ from: 'a', content: 'Which of the two do you want?' }]);
+
+    root.ask('a:2', 'await', {}, 60_000);
+    await until(() => run.store.agent('a').state.status === 'waiting', 'the root waiting on an answer');
+
+    await run.supervisor.tell('The first one.');
+    await root.until(() => root.answers().has('a:2'), 'the human’s reply');
+    expect(root.answers().get('a:2')).toEqual({ ok: true, content: '[from the human] The first one.' });
+  });
+
+  /**
+   * A refusal a root can act on. The generic wording is false for exactly this agent — its
+   * parent *is* the human — so a root that guessed wrong is told the word rather than told
+   * something untrue about its own tree.
+   */
+  it('tells a root that reached for the wrong word what the right one is', async () => {
+    const run = await aTree(['send'], 1);
+    const root = run.driver.latest('a')!;
+    await root.until(() => root.messages().length > 0);
+
+    expect(await ask(root, 'a:1', 'send', { to: 'parent', content: 'Anyone there?' })).toEqual({
+      ok: false,
+      content:
+        '"parent" is not one of your children, and the human — who is your parent — is addressed as `human`. Nothing was sent.',
+    });
+    expect(run.toHuman).toEqual([]);
+  });
+
+  /**
+   * The name is vocabulary for one agent, not a channel anyone can reach. A child using it is
+   * addressing a stranger, and is refused as it would be for any other stranger — the tree is
+   * still a tree, and nothing routes past a parent.
+   */
+  it('is the root’s word only, and gets a child nowhere', async () => {
+    const run = await aTree(['send'], 1);
+    const child = run.driver.latest('a-1')!;
+    await child.until(() => child.messages().length > 0);
+
+    expect(await ask(child, 'a-1:1', 'send', { to: HUMAN, content: 'Over my parent’s head.' })).toEqual({
+      ok: false,
+      content: '"human" is neither your parent nor one of your children, so nothing was sent.',
+    });
+    expect(run.toHuman).toEqual([]);
+    expect(run.store.agent('a').mailbox).toEqual([]);
+  });
+});
+
+/**
+ * Not a behaviour — a guard on a list that exists twice and cannot be made to exist once.
+ *
+ * `ROUTED` and the switch in `#request` are one thing by the typecheck. `EVERY_CAPABILITY` is
+ * a third copy in `fixture.ts`, kept a copy because deriving it would put this file in the
+ * import graph of every runtime test that touches the fixture. This is what that costs
+ * instead: a name added to one and not the other fails here, in the tier that runs in
+ * milliseconds, rather than in `containers.test.ts` as a record short a grant, a shell peer
+ * that ignores the refusal, and a harness waiting for a state that never arrives.
+ */
+describe('the routable kinds and the fixture that names them all', () => {
+  it('are the same set', () => {
+    expect([...EVERY_CAPABILITY].sort()).toEqual([...ROUTED].sort());
   });
 });

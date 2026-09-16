@@ -142,7 +142,9 @@ const SUPERVISED: SupervisedCapability[] = [
     description:
       'Send a message to your parent or to one of your own children, and carry on working. ' +
       'Those are the only agents you can address — there is no channel to a sibling, and ' +
-      'work that has to pass between two of your children passes through you. It is ' +
+      'work that has to pass between two of your children passes through you. It is what ' +
+      'lets you say something before your turn is over: a word to your parent while your ' +
+      'own children are still out is this call and nothing else. It is ' +
       'fire-and-forget: it returns once the message has been stored for the other agent, ' +
       'not once that agent has read it, and it never waits for a reply. Waiting for one is ' +
       '`await`, and the two being separate calls is what lets you send to four children ' +
@@ -153,7 +155,11 @@ const SUPERVISED: SupervisedCapability[] = [
         to: {
           type: 'string',
           minLength: 1,
-          description: 'Who to address: your parent, or one of your children by the id `spawn` returned.',
+          description:
+            'Who to address: one of your children, by the id `spawn` returned, or your ' +
+            'parent. If nobody spawned you, your parent is the human — address them as ' +
+            '`human`, and what you say reaches a person by the same call and in the same ' +
+            'shape it would reach an agent.',
         },
         content: {
           type: 'string',
