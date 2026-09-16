@@ -65,9 +65,44 @@ export class SupervisorError extends Error {
  */
 export const SUBSTRATE = '[substrate]';
 
+/**
+ * Who sent it, as the recipient reads it.
+ *
+ * A parent holding four children has four conversations in one mailbox, and without this it
+ * has nothing to tell them apart — which takes away the substrate's own answer to a message
+ * that arrived from the wrong child, that the agent reads who sent it and decides.
+ *
+ * The substrate's mark is unchanged and does not gain a sender. Its content already names
+ * the agent it concerns, and the question that mark answers — whether these are an agent's
+ * words at all — is the prior one.
+ */
+function mark(message: Message): string {
+  if (message.substrate === true) return SUBSTRATE;
+  return message.from === null ? '[from the human]' : `[from ${message.from}]`;
+}
+
+/**
+ * Keep an agent's own words out of the mark position.
+ *
+ * A mark is text and the message beside it is text some other agent wrote, so nothing but
+ * this separates them. A child opening its report with `[substrate] ...` — quoting a message
+ * it was itself sent, which is how a confused agent reaches this rather than a hostile one —
+ * would otherwise be read by its parent as a death.
+ *
+ * One character, at one position, because one position is what a mark can occupy. A
+ * mark-shaped string in the *middle* of a message is deliberately left alone: escaping every
+ * occurrence mangles any message that legitimately discusses the substrate's output,
+ * including a parent asking a child about a report it received.
+ */
+function unmarked(content: string): string {
+  return content.startsWith('[') ? `\\${content}` : content;
+}
+
 /** What an agent is handed when a message is delivered to it. */
 export function render(message: Message): string {
-  return message.substrate === true ? `${SUBSTRATE} ${message.content}` : message.content;
+  // The substrate's own report is not agent-authored, so there is nothing in it to escape —
+  // and escaping it would put a backslash in front of every death report the mark starts.
+  return `${mark(message)} ${message.substrate === true ? message.content : unmarked(message.content)}`;
 }
 
 /** What a body is, for as long as there is one. */
@@ -505,13 +540,53 @@ export class Supervisor {
     await this.#settle();
   }
 
+  /**
+   * Every request, and the two things true of all of them before any handler runs.
+   *
+   * **The grant is checked once, here, for every kind — including kinds added after this.**
+   * A rule enforced in some handlers and not others is reachable by exactly the agent it was
+   * written for: an agent that hand-writes a raw frame is the one whose request should be
+   * trusted least, and it only has to find the handler that forgot. This is the second of the
+   * two places a grant is read, and both stay — the runtime offers an agent only what its
+   * record names, and only one of the two is on the path a raw frame takes.
+   *
+   * **The order is the part that is not obvious.** A record never names a kind that does not
+   * exist, so a grant check placed first answers a typo with "your record does not grant
+   * `sned`", sending an agent to fix a grant when what it has is a spelling mistake.
+   * Establishing that the kind is routable first keeps the unknown-kind answer meaning what
+   * it says.
+   *
+   * **Nothing is written above either check**, which is where `spawn`'s "so nothing was
+   * spawned" tail went. The refusal is uniform now and the guarantee rests on the position of
+   * the check rather than on each message claiming it.
+   */
   async #request(id: string, frame: RequestFrame): Promise<void> {
+    // A kind nothing handles is a result the model can read, not a transport failure.
+    if (!ROUTABLE.has(frame.kind)) {
+      return this.#say(id, {
+        t: 'answer',
+        id: frame.id,
+        ok: false,
+        content: `There is no capability named "${frame.kind}".`,
+      });
+    }
+
+    if (!this.#store.record(id).tools.includes(frame.kind)) {
+      return this.#say(id, {
+        t: 'answer',
+        id: frame.id,
+        ok: false,
+        content: `Your record does not grant \`${frame.kind}\`.`,
+      });
+    }
+
     const input = (typeof frame.input === 'object' && frame.input !== null ? frame.input : {}) as Record<
       string,
       unknown
     >;
 
-    switch (frame.kind) {
+    const kind = frame.kind as Routed;
+    switch (kind) {
       case 'await':
         return this.#awaiting(id, frame);
       case 'send':
@@ -522,15 +597,12 @@ export class Supervisor {
         return this.#stopping(id, frame, input);
       case 'read':
         return this.#reading(id, frame, input);
-      default:
-        // A kind nothing handles is a result the model can read, not a transport failure.
-        // Adding one is a case here and nothing else — the channel does not change.
-        return this.#say(id, {
-          t: 'answer',
-          id: frame.id,
-          ok: false,
-          content: `There is no capability named "${frame.kind}".`,
-        });
+      default: {
+        // Unreachable, and it is the typecheck rather than this line that says so: `kind` is
+        // narrowed to `never` here only while every name in `ROUTED` has a case above.
+        const unhandled: never = kind;
+        throw new SupervisorError(`"${String(unhandled)}" is routable and nothing handles it.`);
+      }
     }
   }
 
@@ -609,11 +681,14 @@ export class Supervisor {
    * **Every check is here rather than in the schema the model was shown.** A schema is a
    * guide to a model; a raw frame reaches this method without passing through one, and the
    * agent that would send a raw frame is precisely the one whose request should not be
-   * trusted. So the grant, the fields, the tool subset and the model identifier are all read
-   * again here — and every one of those refusals happens **before** anything is stored, so a
-   * spawn refused for what it *said* leaves no record, no parent link and no sandbox behind.
-   * A spawn that fails while provisioning the child's body is not that, and the difference
+   * trusted. So the fields, the tool subset and the model identifier are all read again here
+   * — and every one of those refusals happens **before** anything is stored, so a spawn
+   * refused for what it *said* leaves no record, no parent link and no sandbox behind. A
+   * spawn that fails while provisioning the child's body is not that, and the difference
    * bites: see `AGENTS.md` beside this file.
+   *
+   * The caller's *grant* is not among them any more. It is read at `#request` for every kind
+   * at once, above anything that writes, which is the same guarantee held in one place.
    *
    * **Nothing is filtered, substituted or ignored.** A tool the parent does not hold, a
    * duplicate, a `model` that is an object rather than an identifier, a field the supervisor
@@ -626,12 +701,6 @@ export class Supervisor {
     const agent = this.#store.agent(id);
     const refuse = (content: string): Promise<void> =>
       this.#say(id, { t: 'answer', id: frame.id, ok: false, content });
-
-    // The record is what grants a capability, and it is checked here as well as in the
-    // runtime's registry because only one of the two is on the path a raw frame takes.
-    if (!parent.tools.includes('spawn')) {
-      return refuse('Your record does not grant `spawn`, so nothing was spawned.');
-    }
 
     // Supplied and not honoured is the one outcome worth refusing outright: a caller that
     // named one of these believes it will take effect, and it never can.
@@ -725,18 +794,6 @@ export class Supervisor {
   async #stopping(id: string, frame: RequestFrame, input: Record<string, unknown>): Promise<void> {
     const agent = this.#store.agent(id);
     const target = typeof input.id === 'string' ? input.id : null;
-
-    // The same reading of the record that `#spawning` makes, for the same reason: the
-    // runtime's registry is one of the two places this is checked and a raw frame reaches
-    // only the other one.
-    if (!this.#store.record(id).tools.includes('stop')) {
-      return this.#say(id, {
-        t: 'answer',
-        id: frame.id,
-        ok: false,
-        content: 'Your record does not grant `stop`, so nothing was stopped.',
-      });
-    }
 
     if (target === null || !agent.children.includes(target)) {
       return this.#say(id, {
@@ -955,6 +1012,20 @@ export class Supervisor {
     }
   }
 }
+
+/**
+ * The request kinds this channel routes.
+ *
+ * One list, and the switch in `#request` is typed from it — so a name added here without a
+ * case fails the typecheck, and a case for a name that is not here cannot be written. That
+ * is what keeps the grant check above the switch honest: the kinds it refuses on behalf of
+ * are exactly the kinds something handles.
+ */
+const ROUTED = ['await', 'send', 'spawn', 'stop', 'read'] as const;
+
+type Routed = (typeof ROUTED)[number];
+
+const ROUTABLE = new Set<string>(ROUTED);
 
 /**
  * The record fields a spawn may not name, whatever it puts in them.

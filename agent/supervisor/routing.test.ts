@@ -19,15 +19,15 @@ afterEach(async () => {
 /**
  * A root, and however many children below it, each already resident and at a boundary.
  *
- * Every agent here is granted `spawn` and `stop`, because the supervisor reads the caller's
- * record before carrying either out and a tree of agents holding neither could only ever be
- * asked about refusals. What a record has to *say* for a spawn to be accepted is
- * `spawn.test.ts`'s subject; this file is about what happens once it is.
+ * Every agent here is granted every kind this file drives, because the supervisor reads the
+ * caller's record before carrying any of them out and a tree of agents holding none could
+ * only ever be asked about refusals. What a record has to *say* for a request to be accepted
+ * is `spawn.test.ts`'s subject; this file is about what happens once it does.
  */
 async function aTree(children = 0, opening = 'Begin.'): Promise<Run> {
   const run = await aRun();
   runs.push(run);
-  const tools = ['spawn', 'stop'];
+  const tools = ['spawn', 'stop', 'send', 'await', 'read'];
   await run.supervisor.add(aRecord({ id: 'a', parent: null, tools }), opening);
 
   for (let at = 1; at <= children; at++) {
@@ -45,7 +45,7 @@ describe('an agent is booted from its record and told what to do', () => {
     expect(boot.record.id).toBe('a');
     expect(boot.events).toEqual([]);
     await peer.until(() => peer.messages().length > 0);
-    expect(peer.messages()).toEqual(['Begin.']);
+    expect(peer.messages()).toEqual(['[from the human] Begin.']);
     expect(run.store.agent('a').state).toEqual({ status: 'working' });
   });
 
@@ -116,7 +116,7 @@ describe('messages flow parent to child and no further', () => {
 
     const woken = run.driver.latest('a-1')!;
     await woken.until(() => woken.messages().length > 0, 'the parent’s message');
-    expect(woken.messages()).toEqual(['Look at the tree.']);
+    expect(woken.messages()).toEqual(['[from a] Look at the tree.']);
 
     woken.answered('Two files.');
     // Into the parent's mailbox, because the parent is still mid-turn — an in-flight turn is
@@ -175,7 +175,7 @@ describe('the human is the root’s parent rather than an exception to the tree'
     // The same path a parent's message takes, into the same position in the conversation.
     const woken = run.driver.latest('a')!;
     await woken.until(() => woken.messages().length > 0, 'the human’s message');
-    expect(woken.messages()).toEqual(['Now do the next thing.']);
+    expect(woken.messages()).toEqual(['[from the human] Now do the next thing.']);
   });
 });
 
@@ -195,9 +195,9 @@ describe('a message chooses its path by what the agent is doing', () => {
     child.answered('Two files.');
     await parent.until(() => parent.answers().size === 1, 'the awaited message');
 
-    expect(parent.answers().get('a:1')).toEqual({ ok: true, content: 'Two files.' });
+    expect(parent.answers().get('a:1')).toEqual({ ok: true, content: '[from a-1] Two files.' });
     // Continued the turn it was in rather than being told to begin a new one.
-    expect(parent.messages()).toEqual(['Begin.']);
+    expect(parent.messages()).toEqual(['[from the human] Begin.']);
     expect(run.store.agent('a').state).toEqual({ status: 'working' });
   });
 
@@ -215,12 +215,12 @@ describe('a message chooses its path by what the agent is doing', () => {
     // in the mailbox, which is where a message for a working agent goes.
     await until(() => run.store.agent('a').mailbox.length > 0, 'the message being held');
     expect(run.store.agent('a').mailbox).toMatchObject([{ from: 'a-1', content: 'Two files.' }]);
-    expect(parent.messages()).toEqual(['Begin.']);
+    expect(parent.messages()).toEqual(['[from the human] Begin.']);
 
     // The turn runs to its end, and the message is there when it does.
     parent.answered('Done for now.');
     await parent.until(() => parent.messages().length > 1, 'the held message');
-    expect(parent.messages().at(-1)).toBe('Two files.');
+    expect(parent.messages().at(-1)).toBe('[from a-1] Two files.');
   });
 });
 
@@ -294,7 +294,7 @@ describe('an agent spawns a child, and the child is an agent like any other', ()
 
     const born = run.driver.latest(child)!;
     await born.until(() => born.messages().length > 0, 'its opening message');
-    expect(born.messages()).toEqual(['Start looking.']);
+    expect(born.messages()).toEqual(['[from a] Start looking.']);
   });
 
   /**

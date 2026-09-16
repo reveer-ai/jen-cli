@@ -10,8 +10,25 @@ import type { Call, Capability, CapabilityResult } from './runtime/capability.ts
 import type { ModelClient, ModelStep } from './runtime/model.ts';
 
 /**
+ * Every capability the supervisor routes.
+ *
+ * For the tiers that cannot name what they use: an integration test drives a whole tree
+ * through a shell peer whose script decides what it calls, so there is nothing at the test's
+ * own level that could name a narrower set honestly. A unit test is not in that position and
+ * should not reach for this — see {@link aRecord}.
+ */
+export const EVERY_CAPABILITY = ['spawn', 'stop', 'send', 'await', 'read'];
+
+/**
  * A complete, valid record. Every field is filled, because a builder that left optional
  * gaps would let a test pass against a record no supervisor would ever produce.
+ *
+ * **`tools` is empty, and stays empty.** The supervisor refuses any request whose kind the
+ * caller's record does not name, so a test that drives one has to say so — which is the
+ * honest default: it makes the authority a test needed part of what the test says, and a
+ * test that stopped needing one stops claiming it. Defaulting to everything would let a test
+ * pass without ever stating what it was allowed to do, which is the thing the grant check
+ * exists to make impossible for an agent.
  */
 export function aRecord(overrides: Partial<AgentRecord> = {}): AgentRecord {
   return {

@@ -340,7 +340,7 @@ describe('an agent that was spawned spawns agents of its own', () => {
 
     const born = run.driver.latest('a-1-1')!;
     await born.until(() => born.messages().length > 0, 'its opening message');
-    expect(born.messages()).toEqual(['Begin.']);
+    expect(born.messages()).toEqual(['[from a-1] Begin.']);
   });
 
   it('refuses a grandchild’s spawn on the grandchild’s own record, not its ancestors’', async () => {
@@ -364,7 +364,7 @@ describe('an opening starts the child, and its absence leaves a valid dormant on
 
     const born = run.driver.latest('a-1')!;
     await born.until(() => born.messages().length > 0, 'its opening message');
-    expect(born.messages()).toEqual(['Start looking.']);
+    expect(born.messages()).toEqual(['[from a] Start looking.']);
     expect(run.store.agent('a-1').state).toEqual({ status: 'working' });
   });
 
@@ -426,7 +426,7 @@ describe('four children in flight before their parent’s next step', () => {
    * id for an agent that no longer exists anywhere.
    */
   it('has written every child and its parentage by the time it answers', async () => {
-    const run = await aRoot();
+    const run = await aRoot(['spawn', 'send']);
     const peer = run.driver.latest('a')!;
     for (let at = 1; at <= 4; at += 1) {
       peer.ask(`a:${at}`, 'spawn', { name: `scout-${at}`, charter: `Look at ${at}.`, ...(at === 4 ? {} : { opening: 'Begin.' }) });
@@ -531,7 +531,7 @@ describe('a dismissal reaches a subtree and keeps everything it built', () => {
    * judgment and not the supervisor's.
    */
   it('leaves a child that reported available for a later message', async () => {
-    const run = await aRoot(['spawn', 'stop']);
+    const run = await aRoot(['spawn', 'stop', 'send']);
     await ask(run, 'a', 'spawn', { name: 'scout', charter: 'Look around.', tools: [], opening: 'Begin.' });
     const child = run.driver.latest('a-1')!;
     await child.until(() => child.messages().length > 0);
@@ -550,7 +550,7 @@ describe('a dismissal reaches a subtree and keeps everything it built', () => {
     await until(() => run.driver.all('a-1').length === 2, 'the child being woken');
     const woken = run.driver.latest('a-1')!;
     await woken.until(() => woken.messages().length > 0);
-    expect(woken.messages()).toEqual(['One more thing.']);
+    expect(woken.messages()).toEqual(['[from a] One more thing.']);
   });
 });
 

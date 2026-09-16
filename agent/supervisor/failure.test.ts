@@ -28,8 +28,8 @@ const AT = '2026-01-01T00:00:00.000Z';
 async function aPair(): Promise<Run> {
   const run = await aRun({ clock: () => Date.parse(AT) });
   runs.push(run);
-  await run.supervisor.add(aRecord({ id: 'a', parent: null }), 'Begin.');
-  await run.supervisor.add(aRecord({ id: 'a-1', parent: 'a' }), 'Look at the tree.');
+  await run.supervisor.add(aRecord({ id: 'a', parent: null, tools: ['await'] }), 'Begin.');
+  await run.supervisor.add(aRecord({ id: 'a-1', parent: 'a', tools: ['await'] }), 'Look at the tree.');
   return run;
 }
 
@@ -95,7 +95,7 @@ describe('an agent that ends without speaking is reported to its parent', () => 
   it('reports nothing for a body the supervisor itself tore down', async () => {
     const run = await aRun({ clock: () => Date.parse(AT) });
     runs.push(run);
-    await run.supervisor.add(aRecord({ id: 'a', parent: null }), 'Begin.');
+    await run.supervisor.add(aRecord({ id: 'a', parent: null, tools: ['await'] }), 'Begin.');
 
     const peer = run.driver.latest('a')!;
     await peer.until(() => peer.messages().length > 0);
@@ -395,7 +395,7 @@ describe('a stalled tree is surfaced even where nobody said where to put it', ()
     try {
       const run = await aRun({ clock: () => Date.parse(AT), onStalled: null });
       runs.push(run);
-      await run.supervisor.add(aRecord({ id: 'a', parent: null }), 'Begin.');
+      await run.supervisor.add(aRecord({ id: 'a', parent: null, tools: ['await'] }), 'Begin.');
 
       const peer = run.driver.latest('a')!;
       await peer.until(() => peer.messages().length > 0);

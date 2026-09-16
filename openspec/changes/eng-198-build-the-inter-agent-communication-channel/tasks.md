@@ -1,32 +1,32 @@
 ## 1. Declare the two capabilities
 
-- [ ] 1.1 Add `send` to `runtime/main.ts`'s `SUPERVISED`: `to` and `content`, both required, `additionalProperties: false`. The description says who an agent may address — its parent or one of its own children — and that this is fire-and-forget: it returns once the message is stored, not once anyone reads it, and it does not wait for a reply.
-- [ ] 1.2 Add `await` to `SUPERVISED` with the single optional `keep`, an integer of milliseconds, and a `residency` hook reading it from the input (`(input) => input.keep ?? 0`). No other property.
-- [ ] 1.3 Write `await`'s description to teach what a model cannot infer: `keep` holds the *container*, not the memory. Say that a dormant agent resumes holding everything it knew and only loses what was running, so a long wait should name nothing and a quick round trip should name a small number.
-- [ ] 1.4 Extend `spawn`'s `tools` description with what withholding costs — a child with no `send` still reports when its turn ends — and that "answer once and stop" belongs in the child's charter rather than in its grant.
-- [ ] 1.5 Confirm no other file in `runtime/` changed. Two declarations and one revised description is the whole of the runtime's part; anything else means a capability-specific path got in.
+- [x] 1.1 Add `send` to `runtime/main.ts`'s `SUPERVISED`: `to` and `content`, both required, `additionalProperties: false`. The description says who an agent may address — its parent or one of its own children — and that this is fire-and-forget: it returns once the message is stored, not once anyone reads it, and it does not wait for a reply.
+- [x] 1.2 Add `await` to `SUPERVISED` with the single optional `keep`, an integer of milliseconds, and a `residency` hook reading it from the input (`(input) => input.keep ?? 0`). No other property.
+- [x] 1.3 Write `await`'s description to teach what a model cannot infer: `keep` holds the *container*, not the memory. Say that a dormant agent resumes holding everything it knew and only loses what was running, so a long wait should name nothing and a quick round trip should name a small number.
+- [x] 1.4 Extend `spawn`'s `tools` description with what withholding costs — a child with no `send` still reports when its turn ends — and that "answer once and stop" belongs in the child's charter rather than in its grant.
+- [x] 1.5 Confirm no other file in `runtime/` changed. Two declarations and one revised description is the whole of the runtime's part; anything else means a capability-specific path got in.
 
 ## 2. Attribution
 
-- [ ] 2.1 Give `render()` the sender: `[from <id>] …` for an agent, `[from the human] …` for `from: null`, `[substrate] …` unchanged.
-- [ ] 2.2 Escape the mark position — a leading `[` in agent-authored content becomes `\[` before the mark is prepended. Applies to what an agent wrote, not to the substrate's own reports.
+- [x] 2.1 Give `render()` the sender: `[from <id>] …` for an agent, `[from the human] …` for `from: null`, `[substrate] …` unchanged.
+- [x] 2.2 Escape the mark position — a leading `[` in agent-authored content becomes `\[` before the mark is prepended. Applies to what an agent wrote, not to the substrate's own reports.
 - [ ] 2.3 Verify both delivery paths render identically: the resident path through `#say`, and the dormant path through `#answerInLog`. Both already call `render()`; the task is a test that pins it rather than a change.
-- [ ] 2.4 Leave the `message` event's `from: 'parent' | 'self'` alone. It answers "were these my own words", which is a different question from which agent spoke, and ENG-212 should find it already meaning one thing.
+- [x] 2.4 Leave the `message` event's `from: 'parent' | 'self'` alone. It answers "were these my own words", which is a different question from which agent spoke, and ENG-212 should find it already meaning one thing.
 
 ## 3. The grant check
 
-- [ ] 3.1 Add a set of routable kinds and check it at the top of `#request`, keeping today's "There is no capability named …" answer for anything outside it.
-- [ ] 3.2 Add the grant check immediately below it: refuse where `record.tools` does not include `frame.kind`, answering the caller. It must come second — a record never names a kind that does not exist, so checking the grant first answers a typo by sending an agent to fix a grant.
-- [ ] 3.3 Delete the per-handler checks in `#spawning` and `#stopping`. Both are now the generic one; leaving either is the third-copy drift `supervisor/AGENTS.md` warns about.
+- [x] 3.1 Add a set of routable kinds and check it at the top of `#request`, keeping today's "There is no capability named …" answer for anything outside it.
+- [x] 3.2 Add the grant check immediately below it: refuse where `record.tools` does not include `frame.kind`, answering the caller. It must come second — a record never names a kind that does not exist, so checking the grant first answers a typo by sending an agent to fix a grant.
+- [x] 3.3 Delete the per-handler checks in `#spawning` and `#stopping`. Both are now the generic one; leaving either is the third-copy drift `supervisor/AGENTS.md` warns about.
 - [ ] 3.4 Confirm the refusal still precedes any write — the guarantee `spawn`'s "so nothing was spawned" tail used to carry now rests on the check's position, and a test should hold it there.
 
 ## 4. Records that name what they use
 
-- [ ] 4.1 Update `supervisor/routing.test.ts` — its records name `['spawn', 'stop']` and it exercises `send` and `await` throughout, so every one of those calls is refused until the records name them.
-- [ ] 4.2 Update `suspend.test.ts` and `failure.test.ts`, whose records take `aRecord`'s default `tools: []` and drive `await`.
-- [ ] 4.3 Update `read.test.ts` for the same reason. `read` is ENG-212's capability, but the generic check gates it from this change onward — that is the check working, not scope creep.
-- [ ] 4.4 Decide and apply `aRecord`'s default. Leaving `tools: []` means every new test names what it uses, which is the honest default; changing it to the full set would make a test pass without saying what authority it needed.
-- [ ] 4.5 Check `containers.test.ts` and `harness.ts` for records that must name the full set, since the real-container tier is the one that would fail last and slowest.
+- [x] 4.1 Update `supervisor/routing.test.ts` — its records name `['spawn', 'stop']` and it exercises `send` and `await` throughout, so every one of those calls is refused until the records name them.
+- [x] 4.2 Update `suspend.test.ts` and `failure.test.ts`, whose records take `aRecord`'s default `tools: []` and drive `await`.
+- [x] 4.3 Update `read.test.ts` for the same reason. `read` is ENG-212's capability, but the generic check gates it from this change onward — that is the check working, not scope creep.
+- [x] 4.4 Decide and apply `aRecord`'s default. Leaving `tools: []` means every new test names what it uses, which is the honest default; changing it to the full set would make a test pass without saying what authority it needed.
+- [x] 4.5 Check `containers.test.ts` and `harness.ts` for records that must name the full set, since the real-container tier is the one that would fail last and slowest.
 
 ## 5. Tests
 

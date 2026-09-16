@@ -36,8 +36,8 @@ interface Served {
 async function aFamily(): Promise<Run> {
   const run = await aRun({ clock: () => Date.parse(AT) });
   runs.push(run);
-  await run.supervisor.add(aRecord({ id: 'a', parent: null }), 'Begin.');
-  await run.supervisor.add(aRecord({ id: 'a-1', parent: 'a' }), 'Begin.');
+  await run.supervisor.add(aRecord({ id: 'a', parent: null, tools: ['read'] }), 'Begin.');
+  await run.supervisor.add(aRecord({ id: 'a-1', parent: 'a', tools: ['read'] }), 'Begin.');
   await run.supervisor.add(aRecord({ id: 'a-2', parent: 'a' }), 'Begin.');
   await run.supervisor.add(aRecord({ id: 'a-1-1', parent: 'a-1' }), 'Begin.');
   return run;

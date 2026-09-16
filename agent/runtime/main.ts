@@ -37,9 +37,10 @@ import type { Raise, SupervisedCapability } from './supervised.ts';
  * **Declarations and nothing else.** Each entry is a name, a description the model reads,
  * and a JSON Schema for its input; `supervised()` turns it into something `dispatch` cannot
  * tell from work done inside the sandbox. There is no `spawn` branch in the loop, in the
- * dispatcher or in the protocol, and adding `send`, `await` and `read` is three more
- * entries here and nothing else in this file — which is what keeps a runtime at depth four
- * byte-identical to the one nobody spawned.
+ * dispatcher or in the protocol, and adding `read` is one more entry here and nothing else
+ * in this file — which is what keeps a runtime at depth four byte-identical to the one
+ * nobody spawned. `send` and `await` were added exactly that way, and the diff that added
+ * them touched no other file under `runtime/`.
  *
  * **Registering is not granting.** `resolveCapabilities` builds an agent's registry from
  * its *record*, so an agent whose record does not name `spawn` is never offered it, and an
@@ -95,7 +96,13 @@ const SUPERVISED: SupervisedCapability[] = [
             'The capabilities the child may reach. Every one must be a capability you hold ' +
             'yourself — you can create an agent narrower than you or equal to you, never a ' +
             'wider one, and a name you do not hold is refused rather than dropped. Leaving ' +
-            'this out grants none, including `spawn`.',
+            'this out grants none, including `spawn`. Withholding narrows a child rather ' +
+            'than silencing it: one you do not grant `send` still reports to you when its ' +
+            'turn ends, because reporting at a turn boundary is not a capability and cannot ' +
+            'be withheld — what it loses is the ability to speak in the middle of its work. ' +
+            'And if what you want is a child that answers once and stops, write that in its ' +
+            'charter: a grant says what a child may reach, not what shape its conversation ' +
+            'with you should take.',
         },
         model: {
           type: 'string',
@@ -128,6 +135,73 @@ const SUPERVISED: SupervisedCapability[] = [
       },
       required: ['id'],
       additionalProperties: false,
+    },
+  },
+  {
+    name: 'send',
+    description:
+      'Send a message to your parent or to one of your own children, and carry on working. ' +
+      'Those are the only agents you can address — there is no channel to a sibling, and ' +
+      'work that has to pass between two of your children passes through you. It is ' +
+      'fire-and-forget: it returns once the message has been stored for the other agent, ' +
+      'not once that agent has read it, and it never waits for a reply. Waiting for one is ' +
+      '`await`, and the two being separate calls is what lets you send to four children ' +
+      'before you collect from any of them.',
+    schema: {
+      type: 'object',
+      properties: {
+        to: {
+          type: 'string',
+          minLength: 1,
+          description: 'Who to address: your parent, or one of your children by the id `spawn` returned.',
+        },
+        content: {
+          type: 'string',
+          description:
+            'What to say. It reaches the other agent as an ordinary message with your id on ' +
+            'it, so it always knows the words are yours.',
+        },
+      },
+      required: ['to', 'content'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'await',
+    description:
+      'Wait for the next message addressed to you, and return it. Whichever message arrives ' +
+      'first is the one you get, whoever sent it — a child reporting, your parent asking for ' +
+      'something else — and what you read names its sender, so you decide what to do about ' +
+      'it once you can see who spoke. You cannot wait for a particular agent and you cannot ' +
+      'set a deadline: this returns when a message arrives, and messages already waiting for ' +
+      'you come back immediately.',
+    schema: {
+      type: 'object',
+      properties: {
+        keep: {
+          type: 'integer',
+          minimum: 0,
+          description:
+            'How long to keep your container while you wait, in milliseconds. This is about ' +
+            'your body and not your memory. Letting the container go costs you nothing you ' +
+            'know: you resume holding your whole conversation and everything in your ' +
+            'workspace, and the only thing lost is whatever was still running inside the ' +
+            'container — a process you started, work you had not written down. So name a ' +
+            'small number when you expect an answer in a moment and want to keep something ' +
+            'running across it, and name nothing at all for a wait that could last minutes ' +
+            'or hours. Leaving it out is the ordinary case.',
+        },
+      },
+      additionalProperties: false,
+    },
+    // Read from the model's own input, which is the only place it can come from without a
+    // constant about an agent's body living somewhere no charter can reach. Guarded rather
+    // than trusted: nothing validates a call's arguments against the schema, and a `keep`
+    // that is not a duration would make the request frame itself unreadable at the
+    // supervisor — an `await` that never returns instead of one that kept nothing.
+    residency: (input) => {
+      const keep = (input as { keep?: unknown }).keep;
+      return typeof keep === 'number' && Number.isFinite(keep) && keep >= 0 ? keep : 0;
     },
   },
 ];

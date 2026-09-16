@@ -31,6 +31,12 @@ import type { AgentRecord } from '../record.ts';
  *
  * Its charter is how a test tells one agent from another: `STAY` asks for its body to be
  * kept, `HOLD` goes quiet mid-turn and never answers, anything else finishes its turn.
+ *
+ * **Every record driving it has to grant what its script calls.** `STAY` raises an `await`,
+ * and the supervisor refuses a request the caller's record does not name — while this peer
+ * reads answers and acts on none of them. So a record that withheld `await` would leave the
+ * agent working forever and the wait below would time out, which reads as a container
+ * problem and is a grant.
  */
 export const SHELL_PEER = `
 IFS= read -r boot
