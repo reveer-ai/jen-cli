@@ -11,7 +11,7 @@ The [proposal](proposal.md) also retires this change's original framing. Two exi
 **Goals:**
 
 - Let a record grant `fs` and `exec` independently, each dispatched and recorded through the path every other capability already uses.
-- Confine `fs` to the agent's mounted workspace, and bound what it returns.
+- Let an agent write a file whose content survives verbatim, whatever it contains, and confine `fs` to the agent's mounted workspace.
 - Run a command as a direct child of the runtime process, with the credentials the sandbox already delivered, and return its outcome as data the model can act on.
 - Guarantee that no command can wedge an agent indefinitely.
 - Give the agent enough guidance to use an installed assistant well, without any assistant appearing in the code.
@@ -37,25 +37,31 @@ The factory takes the record because `fs` needs `workspace` and both need it to 
 
 **One file-level doc comment becomes false and must be corrected in the same change.** `capability.ts` currently says every capability that ships is a supervised one, and that the interface's other half is exercised only by the test suite. That was accurate when written and stops being accurate here.
 
-### 2. `fs` is one grant with three operations
+### 2. `fs` exists for writes, and reads because they are cheap to add
 
-Expose a single `fs` capability whose input names an operation — list a directory, read a file, write a file — with paths relative to `record.workspace` and `.` for the root. One capability rather than three named grants, because the grant is the unit of authority and `fs` without `exec` is the configuration worth having: an agent that can read and cannot run.
+Expose a single `fs` capability whose input names an operation — list a directory, read a file, write a file — with paths relative to `record.workspace` and `.` for the root.
 
-Return listings and file content as bounded text in `CapabilityResult.content`. Invalid input, a missing file, and an OS error are all `ok: false` results the model can read and react to, never throws — `dispatch` would convert them anyway, and a capability that reports its own failures says something more useful than a stringified exception.
+**The case for `fs` is writing, not reading.** Reading through `exec` is perfectly good: `cat` and `sed -n` do it. Writing through `exec` is not, because the content has to be embedded in a heredoc, and any file containing the delimiter, a `$`, or a backtick either breaks the command or is silently interpolated into something other than what the agent meant. That is the ordinary way shell-based file writing fails, not an exotic one. A write tool takes the content as a JSON string and none of it applies. Every mature coding assistant carries a file-writing tool beside its shell for this reason rather than making its model quote content into one.
+
+Reading and listing come along because they are nearly free once the path handling exists, and because they behave better than their shell equivalents in two small ways: a missing file is a clean failure rather than a message on stderr with an exit code, and the result is truncated predictably rather than by whatever the model piped it through. A record may also grant `fs` without `exec`, which is an agent that can read and cannot run — a real shape, though not one this change needs.
+
+Return listings and file content as text in `CapabilityResult.content`, **capped the same way `exec`'s output is and by the same constant**: the beginning up to the cap, with a plain statement that it was cut off. One rule for how much a tool result may carry, not two. An agent that needs a large file in pieces has `exec` and the shell for it.
+
+Invalid input, a missing file, and an OS error are all `ok: false` results the model can read and react to, never throws — `dispatch` would convert them anyway, and a capability that reports its own failures says something more useful than a stringified exception.
 
 Validate paths at invocation despite the JSON Schema, which is a guide to the model and not a trust boundary. Reject absolute paths and parent traversal, resolve the path, and require the result to remain under the workspace so a symlink cannot lead out of it. For a write, validate the parent, refuse an existing symlink at the target, write a temporary file in the same directory and rename it into place, so an interrupted write leaves either the old file or the new one and never half of either.
 
 A write replaces a whole file. Patching, searching and bulk edits are what `exec` and the installed command-line tools are for; re-implementing them here would make this task an editor.
 
-**`fs` is not a narrower `exec`, and the specs must not imply it is.** For an agent holding both, `exec` is the wider authority and `fs`'s path confinement constrains nothing — the value of `fs` to that agent is bounded output and structured failures, not containment.
+**`fs` is not a narrower `exec`, and the specs must not imply it is.** For an agent holding both, `exec` is the wider authority and `fs`'s path confinement constrains nothing — what `fs` gives that agent is a write it does not have to quote, not containment.
 
 ### 3. `exec` runs argv in this container and caps what comes back
 
 Expose one `exec` capability taking an `argv` array, optional text `stdin`, and an optional workspace-relative `cwd` defaulting to the workspace root. Spawn the named executable directly with no implicit shell; an agent that wants a shell passes `sh`, `-lc` and its command, and says so in the transcript by doing it. Close stdin after the supplied input, drain stdout and stderr concurrently, and return the exit code or terminating signal with the two streams separately identified. A nonzero exit, a signal, a spawn failure, malformed input, or a deadline is `ok: false` with the output attached.
 
-Two properties carry most of the value:
-
 **Output is capped at a conservative number of bytes, and that is the whole of the rule.** Read until the cap, stop, terminate the child, and return what was read with a plain statement that the output was cut off. No ring buffer, no head-and-tail split, no elision of a middle.
+
+**Terminating means one thing wherever it happens here.** `exec` spawns the child into its own process group and ends it by signalling that group — `SIGTERM`, then `SIGKILL` after a short grace. The group rather than the process, because a coding assistant starts children of its own and signalling the direct child alone leaves them running. The cap and the deadline of Decision 4 are two reasons to reach for it and not two mechanisms.
 
 This is deliberately not a judgment about which bytes matter. `exec` cannot know whether the interesting part of a command's output is its first line or its last — a compiler dump leads with the cause and trails cascade, a failed build trails the error that stopped it, an assistant trails its closing summary — and any rule the capability picks is wrong for half of what an agent runs. The agent knows, because it chose the command. It also already holds the tool for acting on that knowledge: `| tail`, `| grep`, `| head`, or a redirect to a file read back through `fs`. Slicing belongs there, and `exec` returning the first N bytes is what a pipe into `head` has always done.
 
@@ -69,11 +75,11 @@ Recovery from a cut-off result is re-running the command, which for a test suite
 
 ### 4. One fixed deadline, because nothing else will ever stop a command
 
-`exec` enforces a single wall-clock deadline: a generous named constant in the capability module, not a parameter and not one of a pair of bounds. On expiry it signals the child's process group — `SIGTERM`, then `SIGKILL` after a short grace — and returns `ok: false` carrying the output captured so far and how it ended. It spawns the child into its own process group precisely so this works: a coding assistant starts children of its own, and signalling only the direct child leaves them running.
+`exec` enforces a single wall-clock deadline: a generous named constant in the capability module, not a parameter and not one of a pair of bounds. On expiry it terminates the child as Decision 3 describes and returns `ok: false` carrying the output captured so far and how it ended.
 
 **Nothing else in the substrate would ever end a stuck call.** The supervisor arms a residency timer only at `#turn` (`agent/supervisor/index.ts:574`) and `#awaiting` (`:657`), both states an agent reaches by *finishing* something. A body blocked inside `dispatch` is `working` and has no timer at all, and the loop awaits each call in turn (`runtime/index.ts:166`), so one command that never returns is an agent that never returns.
 
-**It bounds elapsed time rather than silence, because only that is complete.** Bounding silence catches a wedged process sooner, which is its whole advantage, and misses the process that emits forever without finishing — a watch-mode command, a build loop. Keeping the tail obliges `exec` to drain to the end, so an output cap cannot stop one either. That leaves the permanent wedge intact, which is the failure this exists to prevent. A second mechanism that covers the fast case and leaves the hole open is worse than one that closes it.
+**It bounds elapsed time rather than silence, because only that is complete.** Bounding silence catches a wedged process sooner, which is its whole advantage, and misses the case this exists for: a command that produces almost nothing and never finishes. The output cap of Decision 3 already ends a process that floods — it stops at the cap and terminates — so what is left uncovered is exactly the quiet hang, and only elapsed time catches that. A second, silence-based mechanism would cover a case already covered and still leave the hole.
 
 **It is fixed rather than named by the agent**, which is where it parts from `residency`. Residency is a cost-against-latency trade the agent alone can weigh, having just decided what it dispatched; `agent-supervisor` argues at length that a constant deciding it would be policy in code. A deadline is the opposite kind of thing — a liveness guarantee the substrate owes whatever the agent believes, and an agent that can name it can disable it. Set generously, no real assistant run is at risk, so the cost of the guarantee is wall-clock on an otherwise idle container.
 
@@ -106,7 +112,7 @@ Guidance also covers the interrupted result from Decision 5: inspect the workspa
 
 ### 7. Test each boundary at the level that can prove it
 
-Unit tests cover grant selection for `fs` and `exec` independently; `fs` path validation including a symlink leading out of the workspace, atomic replacement, and read bounds; `exec` argv without a shell, `stdin` delivery, `cwd`, separate stream capture, nonzero exit, spawn failure, and the output cap — that output under it arrives byte-for-byte untouched, that output over it comes back cut at the cap with the child terminated, and that the result says it was cut off.
+Unit tests cover grant selection for `fs` and `exec` independently; `fs` path validation including a symlink leading out of the workspace, atomic replacement, reads capped by the same constant `exec` uses, and — the test that proves why `fs` exists — a write whose content contains a heredoc delimiter, a `$`, and a backtick, round-tripping byte-for-byte; `exec` argv without a shell, `stdin` delivery, `cwd`, separate stream capture, nonzero exit, spawn failure, and the output cap — that output under it arrives byte-for-byte untouched, that output over it comes back cut at the cap with the child terminated, and that the result says it was cut off.
 
 The deadline gets its own tests, because it is the one guarantee here: a child that ignores `SIGTERM` is still gone after the grace, a child that has forked grandchildren leaves none behind, and the result reports the deadline with the output captured up to it.
 
