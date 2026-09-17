@@ -19,7 +19,8 @@ The agent runtime has a capability interface but no workspace-local `fs` or `exe
 
 ### Modified Capabilities
 
-None. The existing runtime capability interface and sandbox process primitive remain the mechanism these new capabilities use.
+- `agent-runtime`: Keep the runtime's own reasoning loop while replacing its stale coding-assistant adapter rationale with invocation through the local `exec` capability.
+- `agent-supervisor`: Keep model inheritance and tool subset rules, while removing the claim that a separately configured coding-assistant capability exists. A child inherits its parent's image and credential references and can invoke an installed assistant only if granted `exec`.
 
 ## Impact
 
