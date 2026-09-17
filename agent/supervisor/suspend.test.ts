@@ -66,7 +66,7 @@ function wouldSend(events: readonly Event[]): string {
 async function atACall(residency = 0): Promise<{ run: Run; peer: Peer }> {
   const run = await aRun({ clock: () => Date.parse(AT) });
   runs.push(run);
-  await run.supervisor.add(aRecord({ id: 'a', parent: null }), 'Begin.');
+  await run.supervisor.add(aRecord({ id: 'a', parent: null, tools: ['await'] }), 'Begin.');
 
   const peer = run.driver.latest('a')!;
   await peer.until(() => peer.messages().length > 0);
@@ -85,7 +85,14 @@ describe('a message delivered to a dormant agent answers the call it suspended o
     await until(() => run.driver.all('a').length === 2, 'the agent being woken');
 
     const log = await run.store.transcript('a');
-    expect(log.at(-1)).toEqual({ type: 'tool_result', at: AT, id: 'c1', content: 'Two files.', ok: true, ms: 0 });
+    expect(log.at(-1)).toEqual({
+      type: 'tool_result',
+      at: AT,
+      id: 'c1',
+      content: '[from the human] Two files.',
+      ok: true,
+      ms: 0,
+    });
 
     // And the body that was provisioned was booted on exactly that log, rather than on one
     // the supervisor kept to itself.
@@ -115,7 +122,7 @@ describe('a message delivered to a dormant agent answers the call it suspended o
   it('still synthesizes an interruption for an agent that died mid-call', async () => {
     const run = await aRun({ clock: () => Date.parse(AT) });
     runs.push(run);
-    await run.supervisor.add(aRecord({ id: 'a', parent: null }), 'Begin.');
+    await run.supervisor.add(aRecord({ id: 'a', parent: null, tools: ['await'] }), 'Begin.');
 
     const peer = run.driver.latest('a')!;
     await peer.until(() => peer.messages().length > 0);
@@ -164,7 +171,7 @@ describe('a booted body is told whether it owes the model a step', () => {
   it('says the opposite where a message follows on the channel', async () => {
     const run = await aRun({ clock: () => Date.parse(AT) });
     runs.push(run);
-    await run.supervisor.add(aRecord({ id: 'a', parent: null }), 'Begin.');
+    await run.supervisor.add(aRecord({ id: 'a', parent: null, tools: ['await'] }), 'Begin.');
 
     const first = run.driver.latest('a')!;
     await first.until(() => first.messages().length > 0);
@@ -179,7 +186,7 @@ describe('a booted body is told whether it owes the model a step', () => {
 
     expect(owedOf(run, 'a')).toBe(false);
     await run.driver.latest('a')!.until((): boolean => run.driver.latest('a')!.messages().length > 0);
-    expect(run.driver.latest('a')!.messages()).toEqual(['Try again.']);
+    expect(run.driver.latest('a')!.messages()).toEqual(['[from the human] Try again.']);
   });
 });
 
@@ -200,7 +207,7 @@ describe('how long a body is kept is the agent’s to name', () => {
     await run.supervisor.tell('Two files.');
     await peer.until(() => peer.answers().size === 1, 'the answer arriving in place');
 
-    expect(peer.answers().get('a:1')).toEqual({ ok: true, content: 'Two files.' });
+    expect(peer.answers().get('a:1')).toEqual({ ok: true, content: '[from the human] Two files.' });
     // Woken in its own body: nothing was provisioned to do it.
     expect(run.driver.all('a')).toHaveLength(1);
     // And nothing was written to the log, because the pipe was there to carry it.
@@ -249,7 +256,7 @@ describe('a suspension is invisible to the agent it happened to', () => {
     // What the agent would have had if the answer had come down a pipe it never lost.
     const uninterrupted: Event[] = [
       ...calling(),
-      { type: 'tool_result', at: AT, id: 'c1', content: 'Two files.', ok: true, ms: 0 },
+      { type: 'tool_result', at: AT, id: 'c1', content: '[from the human] Two files.', ok: true, ms: 0 },
     ];
     const resumed = JSON.parse(run.driver.latest('a')!.boot) as { events: Event[] };
 
@@ -295,7 +302,7 @@ describe('a transcript is durable before the body is allowed to end', () => {
   it('has stored every event by the moment the body ends', async () => {
     const run = await aRun({ clock: () => Date.parse(AT) });
     runs.push(run);
-    await run.supervisor.add(aRecord({ id: 'a', parent: null }), 'Begin.');
+    await run.supervisor.add(aRecord({ id: 'a', parent: null, tools: ['await'] }), 'Begin.');
 
     let atTeardown: number | undefined;
     run.driver.beforeDestroy = async () => {

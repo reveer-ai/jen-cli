@@ -6,8 +6,8 @@
  * the model** — which is what `capability.ts` was written to hold, and what keeps an agent
  * from ever *holding* the ability to spawn rather than only asking for it.
  *
- * **Nothing is registered here.** The registry is `main.ts`'s, which is where `spawn` and
- * `stop` are declared and where `send`, `await` and `read` will be. What this defines is how
+ * **Nothing is registered here.** The registry is `main.ts`'s, which is where `spawn`,
+ * `stop`, `send` and `await` are declared and where `read` will be. What this defines is how
  * one of them is built — and the shape held for five capabilities written against it after
  * the first two, rather than being settled by whichever of them was written first.
  */
@@ -31,10 +31,17 @@ export interface SupervisedCapability {
    * How long this agent wants its body kept, read from what the model asked for.
    *
    * Absent means zero, which is the absence of a request rather than a choice made on the
-   * agent's behalf. A capability that is not a suspension leaves it out; one that is — the
-   * `await` ENG-198 builds — reads the number the model named out of its own input, which
-   * is the only place it can come from without a constant appearing somewhere no charter
-   * can reach.
+   * agent's behalf. A capability that is not a suspension leaves it out; one that is —
+   * `await` — reads the number the model named out of its own input, which is the only
+   * place it can come from without a constant appearing somewhere no charter can reach.
+   *
+   * **What arrives here is what the model wrote, and nothing has checked it against the
+   * schema beside it.** `dispatch` parses the call's JSON and invokes; a declared
+   * `type: integer` does not stand between a model and a `keep` of `"60000"`. So a hook
+   * guards rather than trusts, and the reason is the blast radius rather than tidiness:
+   * returning something `../protocol.ts`'s `count()` refuses makes the *request frame*
+   * unreadable at the supervisor, so there is no request and no answer, and the agent is
+   * left on a call that never returns — strictly worse than the residency being wrong.
    */
   residency?(input: unknown): number;
 }

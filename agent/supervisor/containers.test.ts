@@ -23,7 +23,7 @@ import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 
-import { aRecord } from '../fixture.ts';
+import { aRecord, EVERY_CAPABILITY } from '../fixture.ts';
 import { DockerSandboxDriver } from '../sandbox/docker.ts';
 import { SHELL_PEER, type HarnessConfig } from './harness.ts';
 import { Supervisor } from './index.ts';
@@ -81,8 +81,16 @@ async function all(): Promise<string[]> {
   return lines('ps', '-a', '--filter', `label=jen.run=${RUN}`, '--format', '{{.Label "jen.agent"}}');
 }
 
+/**
+ * Everything granted, because the shell peer decides what it calls and this test cannot.
+ *
+ * A record that omitted a kind the peer's script reaches would be refused at the channel,
+ * and the peer ignores answers — so the agent would never reach the state the harness is
+ * waiting for and the test would hang rather than fail. This is the tier where that costs
+ * the most to diagnose, so the grant is the wide one here and nowhere else.
+ */
 function aPeerRecord(id: string, charter: string, parent: string | null = null): AgentRecord {
-  return aRecord({ id, charter, parent, environment: IMAGE, workspace: '/workspace', tools: [] });
+  return aRecord({ id, charter, parent, environment: IMAGE, workspace: '/workspace', tools: EVERY_CAPABILITY });
 }
 
 async function aStore(): Promise<{ store: Store; root: string }> {
