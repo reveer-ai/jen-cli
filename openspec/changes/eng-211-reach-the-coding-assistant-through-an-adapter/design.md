@@ -49,13 +49,17 @@ A write replaces a whole file. Patching, searching and bulk edits are what `exec
 
 **`fs` is not a narrower `exec`, and the specs must not imply it is.** For an agent holding both, `exec` is the wider authority and `fs`'s path confinement constrains nothing — the value of `fs` to that agent is bounded output and structured failures, not containment.
 
-### 3. `exec` runs argv in this container and keeps the tail
+### 3. `exec` runs argv in this container and bounds what comes back
 
 Expose one `exec` capability taking an `argv` array, optional text `stdin`, and an optional workspace-relative `cwd` defaulting to the workspace root. Spawn the named executable directly with no implicit shell; an agent that wants a shell passes `sh`, `-lc` and its command, and says so in the transcript by doing it. Close stdin after the supplied input, drain stdout and stderr concurrently, and return the exit code or terminating signal with the two streams separately identified. A nonzero exit, a signal, a spawn failure, malformed input, or a deadline is `ok: false` with the output attached.
 
 Two properties carry most of the value:
 
-**Output is bounded by keeping the tail, through a fixed-size ring buffer per stream.** Every form of assistant output puts the payload last — Claude Code's `--output-format json` is a single closing object, its `stream-json` ends with that same object, plain text ends with the closing summary. Truncating from the front discards exactly the part worth having. The ring buffer is also what bounds memory: a process emitting gigabytes costs a constant, since draining continues while the earlier bytes are dropped. A truncated result says so and says how much went, rather than silently presenting a fragment as the whole.
+**Output is bounded by keeping both ends and dropping the middle**, per stream: a small fixed head buffer that stops accepting once full, and a ring buffer holding the tail. Neither end alone is right. The tail is what assistant output needs — `--output-format json` is a single closing object, `stream-json` ends with that same object, plain text ends with the closing summary — and it is what a failed build needs, since the error that stopped it is last. The head is what a compiler's error dump needs, where the first error is the cause and everything after it is cascade, and what `git log` or a stack trace needs, where the newest or innermost entry comes first. Keeping one end and not the other is wrong for half of what an agent runs.
+
+The two buffers are also what bound memory: a process emitting gigabytes costs a constant, because the head stops filling and the tail drops what it has passed. A result that dropped anything says so and says how much, in place, rather than presenting a fragment as the whole — and the agent that needs more can redirect the command's output to a file and read it back through `fs` in pieces.
+
+For ordinary work none of this engages. Sized in tens of kilobytes, the bound is above everything routine — a `git status`, a `git diff --stat`, a directory listing — which arrive whole and untouched. It is a backstop against the test suite, the verbose build and the large file, not a trimming every call pays.
 
 **Credentials reach the child by inheritance and by nothing else.** The prologue has already exported them into the runtime process's environment, so an ordinary spawn is sufficient and no secret passes through `argv`, a file, or another request. Supplying a prompt on `stdin` keeps a large or sensitive prompt out of `argv` too, which is why `stdin` is part of the contract rather than an afterthought.
 
@@ -91,7 +95,7 @@ Guidance also covers the interrupted result from Decision 5: inspect the workspa
 
 ### 7. Test each boundary at the level that can prove it
 
-Unit tests cover grant selection for `fs` and `exec` independently; `fs` path validation including a symlink leading out of the workspace, atomic replacement, and read bounds; `exec` argv without a shell, `stdin` delivery, `cwd`, separate stream capture, nonzero exit, spawn failure, and tail-keeping with an explicit truncation report.
+Unit tests cover grant selection for `fs` and `exec` independently; `fs` path validation including a symlink leading out of the workspace, atomic replacement, and read bounds; `exec` argv without a shell, `stdin` delivery, `cwd`, separate stream capture, nonzero exit, spawn failure, and the output bound — that output under the bound arrives byte-for-byte untouched, that output over it keeps both ends, and that what was dropped is reported.
 
 The deadline gets its own tests, because it is the one guarantee here: a child that ignores `SIGTERM` is still gone after the grace, a child that has forked grandchildren leaves none behind, and the result reports the deadline with the output captured up to it.
 
@@ -103,7 +107,7 @@ A stub executable stands in for an assistant: it records the prompt it received 
 
 - **`exec` is arbitrary execution inside the container, including commands that print the environment.** → The sandbox's existing position stands and should be cited rather than re-litigated: an agent holds its own credentials, restriction concerns egress, and that is acceptable while the substrate runs on its operator's own machine (`openspec/specs/agent-sandbox/spec.md:232`). What is new is that a secret can now reach the **transcript**, which outlives the container. The sandbox's prohibition is scoped to what creation writes, so nothing breaks, but the specs artifact must say this rather than leave it to be inferred. Grant `exec` deliberately, and never write guidance that asks an agent to echo its environment.
 - **A generous deadline means a wedged command holds a container for a long time.** → Accepted, and the alternative is worse in both directions: a short deadline kills real assistant work, and a second silence-based bound leaves the permanent wedge open. The cost is wall-clock on an idle container, not tokens.
-- **Tail-keeping can drop something the agent needed.** → Report the truncation and its size so the model knows it is reading the end of something, and size the buffers for a single-object assistant result with room to spare. An agent that needs more has `fs` and can redirect output to a file.
+- **The output bound can still drop something the agent needed** — a middle section, or a long first error that overruns the head. → Report what was dropped and how much, so the model knows it is reading around a gap rather than the whole; size the bound above everything routine so it engages rarely; and say in the guidance that output too large to return can be redirected to a file and read back through `fs`.
 - **`fs` path validation races with the filesystem.** → Resolve and check immediately before each operation and refuse symlinked targets, and state plainly that the container is the security boundary — path validation does not defend against a hostile process that already holds `exec`.
 - **A broad `exec` grant can bypass any narrower tool added later.** → Treat it as broad when ENG-203 designs git policy, and do not claim a narrower file or git policy for an agent that holds `exec`.
 
@@ -115,4 +119,4 @@ A stub executable stands in for an assistant: it records the prompt it received 
 
 ## Open Questions
 
-- **What deadline, and what output caps?** Both are single constants and implementation should choose them, test them explicitly, and write the reasoning beside them. The deadline wants to sit comfortably above a substantial assistant run; the caps want to hold a single-object assistant result with room to spare. Neither is a parameter, so getting them wrong is a one-line change with evidence behind it rather than an interface revision.
+- **What deadline, and what output caps?** Both are single constants and implementation should choose them, test them explicitly, and write the reasoning beside them. The deadline wants to sit comfortably above a substantial assistant run; the caps want to hold a single-object assistant result with room to spare, and the head's share wants to hold a compiler's first several errors. Neither is a parameter, so getting them wrong is a one-line change with evidence behind it rather than an interface revision.
