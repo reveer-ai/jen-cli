@@ -16,9 +16,11 @@
  * stands in for the supervisor, so they face each other rather than overlapping.
  */
 import { spawn, type ChildProcess } from 'node:child_process';
+import { mkdtemp, readFile, realpath, rm } from 'node:fs/promises';
 import { createServer, type Server } from 'node:http';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
 import { aRecord } from '../fixture.ts';
 import { encode, lines, parseFromAgent, type FromAgent, type ToAgent } from '../protocol.ts';
@@ -584,10 +586,14 @@ describe('a failure at the entry point says what it was, and not in a stack trac
     expect(peer.stderr).toMatch(/record\.name is missing/);
   });
 
+  // The name here was `fs` until ENG-211 made `fs` resolvable, at which point the test
+  // stopped failing construction and instead booted an ordinary agent that sat waiting for
+  // a message until the suite's own timeout — five minutes, reported as a timeout naming
+  // nothing. Whatever stands here has to be a name no source offers.
   it('reports a capability its record names that it cannot resolve', async () => {
-    const peer = new Peer(frameFor({ tools: ['fs'] }), { MODEL_API_KEY: 'sk-stub' });
+    const peer = new Peer(frameFor({ tools: ['telepathy'] }), { MODEL_API_KEY: 'sk-stub' });
     expect(await peer.exit).toBe(1);
-    expect(peer.stderr).toMatch(/"fs"/);
+    expect(peer.stderr).toMatch(/"telepathy"/);
   });
 
   /**
@@ -824,5 +830,134 @@ describe('a capability the agent does not hold is offered, called, and answered'
     await neither.tell('Say something.');
     expect(offered(0)).toEqual(['spawn']);
     await neither.stop();
+  });
+});
+
+/**
+ * The other half of the interface, at the entry point rather than in isolation.
+ *
+ * `workspace.test.ts` proves what `fs` and `exec` do; this proves what the *program* does
+ * with them — that the real `main.ts` composes them into the registry beside the supervised
+ * declarations, that the record still decides which of them an agent is offered, and that a
+ * call to one is answered here rather than raised. The last is the property the whole design
+ * rests on and the only one that cannot be seen from inside the capability: a request frame
+ * appearing for `fs` would mean local work had acquired a supervisor round trip.
+ */
+describe('a capability the agent holds is answered where it stands', () => {
+  /** The model writing a file whose content a shell would have mangled. */
+  const WRITES = {
+    role: 'assistant',
+    content: null,
+    refusal: null,
+    annotations: [],
+    tool_calls: [
+      {
+        id: 'call-1',
+        type: 'function',
+        function: {
+          name: 'fs',
+          arguments: JSON.stringify({
+            operation: 'write',
+            path: 'note.txt',
+            content: 'EOF\n$(echo interpolated) and `backticks`\n',
+          }),
+        },
+      },
+    ],
+  };
+
+  /** The model running a program — here the stub that stands in for an assistant. */
+  function runs(argv: string[], stdin: string): Record<string, unknown> {
+    return {
+      role: 'assistant',
+      content: null,
+      refusal: null,
+      annotations: [],
+      tool_calls: [
+        { id: 'call-1', type: 'function', function: { name: 'exec', arguments: JSON.stringify({ argv, stdin }) } },
+      ],
+    };
+  }
+
+  let workspace = '';
+
+  beforeEach(async () => {
+    workspace = await realpath(await mkdtemp(join(tmpdir(), 'jen-entry-')));
+  });
+
+  afterEach(async () => {
+    await rm(workspace, { recursive: true, force: true });
+  });
+
+  it('offers them from the record, beside the ones it raises', async () => {
+    const peer = start({ tools: ['fs', 'spawn', 'exec'], workspace });
+    await peer.tell('Say something.');
+
+    const sent = received[0]?.body as { tools?: { function: { name: string } }[] };
+    // The record's order, and no distinction of kind anywhere in it — which is what the
+    // model sees and therefore the whole of what "indistinguishable" has to mean here.
+    expect(sent.tools?.map((tool) => tool.function.name)).toEqual(['fs', 'spawn', 'exec']);
+    await peer.stop();
+  });
+
+  it('is offered neither by a record that names neither', async () => {
+    const peer = start({ tools: ['spawn'], workspace });
+    await peer.tell('Say something.');
+
+    const sent = received[0]?.body as { tools?: { function: { name: string } }[] };
+    expect(sent.tools?.map((tool) => tool.function.name)).toEqual(['spawn']);
+    await peer.stop();
+  });
+
+  it('does the work in its own process and raises nothing for it', async () => {
+    replies = [WRITES, ORDINARY];
+    const peer = start({ tools: ['fs'], workspace });
+    await peer.tell('Write the note.');
+
+    // It happened, and it happened verbatim — the file holds what no heredoc could carry.
+    expect(await readFile(join(workspace, 'note.txt'), 'utf8')).toBe('EOF\n$(echo interpolated) and `backticks`\n');
+    expect(peer.frames.filter((frame) => frame.t === 'request')).toEqual([]);
+    // And it took its next step on its own, rather than sitting on a call nobody answered.
+    expect(received).toHaveLength(2);
+    await peer.stop();
+  });
+
+  it('records the call and its result in the transcript like any other', async () => {
+    replies = [WRITES, ORDINARY];
+    const peer = start({ tools: ['fs'], workspace });
+    await peer.tell('Write the note.');
+
+    expect(peer.events).toMatchObject([
+      { type: 'charter' },
+      { type: 'message', from: 'parent' },
+      { type: 'tool_call', name: 'fs' },
+      { type: 'usage' },
+      { type: 'tool_result', id: 'call-1', ok: true },
+      { type: 'message', from: 'self' },
+      { type: 'usage' },
+    ]);
+
+    const result = peer.events.find((event) => event.type === 'tool_result')!;
+    expect(typeof (result as { ms: number }).ms).toBe('number');
+    await peer.stop();
+  });
+
+  it('runs an installed assistant as the ordinary command it is', async () => {
+    const prompt = join(workspace, 'prompt.txt');
+    replies = [runs([process.execPath, join(import.meta.dirname, 'assistant-stub.ts'), prompt], 'Fix the loader.'), ORDINARY];
+    const peer = start({ tools: ['exec'], workspace });
+    await peer.tell('Get some help with this.');
+
+    expect(await readFile(prompt, 'utf8')).toBe('Fix the loader.');
+    expect(peer.frames.filter((frame) => frame.t === 'request')).toEqual([]);
+
+    // The transcript holds the command as given, which is what makes the choice of
+    // assistant — or the choice not to use one — recoverable after the fact.
+    const call = peer.events.find((event) => event.type === 'tool_call')!;
+    expect(JSON.parse((call as { arguments: string }).arguments)).toMatchObject({ argv: expect.any(Array) });
+
+    const sent = received[1]?.body as { messages: { role: string; content: string }[] };
+    expect(sent.messages.at(-1)?.content).toContain('changed the workspace');
+    await peer.stop();
   });
 });

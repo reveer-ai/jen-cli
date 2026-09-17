@@ -26,6 +26,7 @@ import { readBootFrame } from './boot.ts';
 import { Runtime } from './index.ts';
 import { openAIClient } from './model.ts';
 import { supervised } from './supervised.ts';
+import { local } from './workspace.ts';
 import { encode, lines, parseToAgent, type FromAgent } from '../protocol.ts';
 
 import type { CapabilityResult } from './capability.ts';
@@ -33,6 +34,11 @@ import type { Raise, SupervisedCapability } from './supervised.ts';
 
 /**
  * The capabilities this runtime asks the supervisor for.
+ *
+ * **Not all of them, since ENG-211.** `fs` and `exec` do their work in this process and
+ * raise nothing, so they are built by `workspace.ts` from the record and composed into the
+ * same list below. Where a capability's work happens is the only difference between the two
+ * kinds, and `resolveCapabilities`, `dispatch` and the loop are all written not to know it.
  *
  * **Declarations and nothing else.** Each entry is a name, a description the model reads,
  * and a JSON Schema for its input; `supervised()` turns it into something `dispatch` cannot
@@ -242,7 +248,13 @@ try {
   const runtime = new Runtime({
     record: frame.record,
     events: frame.events,
-    capabilities: SUPERVISED.map((declaration) => supervised(declaration, raise)),
+    // Both sources, one list. `resolveCapabilities` selects from it by the record's `tools`
+    // exactly as it did when there was only one source, so an agent granted neither `fs`
+    // nor `exec` is offered neither and nothing else about it differs.
+    capabilities: [
+      ...SUPERVISED.map((declaration) => supervised(declaration, raise)),
+      ...local(frame.record),
+    ],
     client: openAIClient(frame.record),
     emit: (event) => say({ t: 'event', event }),
   });

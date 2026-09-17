@@ -216,6 +216,14 @@ is not dropped — Node raises it as an uncaught exception and the process dies.
 running this is the supervisor, so one agent's broken pipe would end every other agent's
 run along with it.
 
+**There are two places this applies now, not one.** `sandbox/docker.ts` starts processes for
+the supervisor, and `runtime/workspace.ts`'s `exec` starts them for the agent — where the
+process that dies from an unlistened `error` is the agent itself, mid-turn, with its turn
+unreported. `exec` listens on all three of a child's pipes for that reason, and its `stdin`
+case is the ordinary one rather than the exotic one: a command that exits without reading
+its input breaks that pipe every time, and a command's exit status is the authority on
+whether it worked. A broken pipe on the way in is not a second opinion.
+
 **`child.on('error', …)` does not cover it**, and that is the part worth remembering. A
 failed write to standard input emits on `child.stdin`, never on `child`; the child listener
 catches a failure to *spawn* and nothing after. The reachable case here is the credential
@@ -233,6 +241,56 @@ Which is the policy: a broken pipe surfaces through `exit`, as the subprocess's 
 exit where it has one (its stderr says more about why than the pipe does), and as a
 rejection where the subprocess exited *zero* — because a command that ran without the
 credentials it was sent looks exactly like one that had them.
+
+## `close` on a child is not the end of its process group
+
+`exec` spawns `detached` so the child leads a process group, and terminates by signalling
+the negated pid — `SIGTERM`, then `SIGKILL` after a grace — so that a build, a test runner
+or an assistant takes its own children with it. The trap is what happens in between.
+
+**The child's `close` says nothing about the group.** It fires when the process we started
+has exited *and* its stdio has closed, and a grandchild that holds none of the child's pipes
+satisfies both while still running. So the obvious tidy-up — clearing the deferred `SIGKILL`
+in the `finally` that runs once `close` resolves — cancels the only signal that would ever
+have reached a descendant ignoring `SIGTERM`, and the result then says the command "and
+anything it had started" was terminated when one of them is still running. It leaks past the
+agent, past the run, and past the test suite, because nothing else knows that pid.
+
+The escalation therefore outlives the child, and the call waits for it rather than leaving it
+to a timer this process may exit before firing. `process.kill(-pid, 0)` is what makes that
+cheap: an empty group answers `ESRCH` and the call returns immediately, which is every
+command that ended on its own, so only a group with something still in it pays what is left
+of the grace. `EPERM` from that probe is a yes — something is there and is not ours.
+
+**Testing it takes a grandchild that both ignores `TERM` and holds no pipe**; drop either
+half and the test passes against the broken code. `sleep 60 &` from a shell inherits the
+shell's stdout, so `close` waits for it and the bug is invisible. Spawn it with
+`stdio: 'ignore'` and a `trap "" TERM`, and clean the pid up in a `finally` — a test for a
+process leak that leaks the process when it fails is not worth much.
+
+## A local capability has no timer behind it, so `open` is not the safe call it looks like
+
+The runtime arms nothing for a capability that is *working*. The supervisor's residency
+timer is set at `#turn` and `#awaiting`, both states an agent reaches by finishing
+something, and the loop awaits each call in turn — so a capability that blocks blocks the
+agent, permanently, and the `AbortSignal` handed to `invoke` is a courtesy rather than a
+guarantee. `exec` carries its own deadline for this reason. Everything else has to avoid
+starting a wait it cannot end.
+
+**`open(path, 'r')` is such a wait.** Opening a FIFO for reading blocks until something
+opens the write end, and a workspace is a directory its own agent can `mkfifo` into, so the
+path is reachable from a model's own output. The read never returns, the turn never ends,
+and nothing anywhere reports it. `constants.O_RDONLY | constants.O_NONBLOCK` is what makes
+the open return regardless of what the path names, and on a regular file it changes nothing.
+
+**Ask the handle what it opened, not the path.** `stat(path)` then `open(path)` proves a
+fact about the name and then reads a different object; `open` then `handle.stat()` asks the
+open file description itself, so there is no window to swap anything into. It also costs one
+syscall rather than two.
+
+Reads look like the operation that cannot hang, which is exactly why this one got shipped:
+the path checks in `place` are about *where* a path leads and say nothing about *what* is
+there, and every test in the suite pointed them at regular files.
 
 ## Asking whether a workspace exists: `volume ls`, never `volume inspect`
 
@@ -291,6 +349,35 @@ Exactly one driver exists, so nothing independently exercises the interface in
 independence is held by reading it — `sandbox/index.test.ts` makes that reading a test,
 over the prose as well as the declarations. Keep it small enough to re-read in full, and
 re-read it in full when a second driver is written.
+
+## A capability name that was a placeholder is now a real capability
+
+Half the suite uses `fs` as the name of a made-up capability — `aCapability('fs')` handed to
+a `Runtime` directly — and that is still fine, because those tests supply the capability
+they name. **`entry.test.ts` is the one that is not fine**, because it runs the real
+`main.ts`, which since ENG-211 offers `fs` and `exec` for real.
+
+One test there named `fs` as the example of a capability a record asks for and nothing can
+resolve. It had been correct for as long as every shipped capability was a supervised one.
+Afterwards the process booted a perfectly good agent and sat waiting for a message that
+never came, and the test failed five minutes later as `Test timed out in 300000ms` — naming
+nothing, pointing at nothing, and looking exactly like a hang in whatever else had changed.
+
+So: **a name used to mean "unresolvable" has to be one no source offers**, and adding an
+entry to `SUPERVISED` or to `local()` means checking `entry.test.ts` for it. The general
+shape, worth recognising elsewhere: a test whose premise is an absence goes quiet rather
+than red when the absence is filled.
+
+## Writing an output flood in a test program takes `writeSync`, not `process.stdout.write`
+
+A loop around `process.stdout.write` looks like the way to make a program that floods its
+output, and on a pipe it is the way to make one that floods *its own memory*. Writes to a
+pipe are asynchronous: each call queues a chunk and returns, the loop never yields, so
+nothing is ever flushed and the reader sees nothing while the writer grows without bound.
+
+`writeSync(1, …)` blocks when the pipe is full, which is what a flooding command actually
+does, and is what lets the reader on the other end — `exec`'s output cap — be the thing that
+stops it. `assistant-stub.ts --flood` is written that way for exactly this reason.
 
 ## The substrate's manifest, and the entry point that needs no build
 
