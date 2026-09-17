@@ -1,26 +1,28 @@
 ## Why
 
-An agent can reason and use supervisor capabilities, but it has no way to ask a coding assistant to work in its sandbox. ENG-194 needs that ability before its recursive acceptance run can exercise real code work; the assistant must remain a tool of the agent rather than take over the agent's reasoning loop.
+The agent runtime has a capability interface but no workspace-local `fs` or `exec` capability, so an agent cannot inspect files, change code, or run a program in its own sandbox. The sandbox driver can start processes for the supervisor, but that operation is not available to the agent's reasoning loop. ENG-194's recursive run needs ordinary local work, including the option to invoke a headless coding assistant already installed in the agent image.
 
 ## What Changes
 
-- Define an assistant-neutral `start(request)` interface whose handle exposes progress, a final result with usage and a distinguishable failure, and a way to stop active work.
-- Add a headless Claude Code adapter that translates the neutral request into its command and output protocol, runs inside the agent's sandbox, and passes the supplied assistant credential without persisting it.
-- Add a non-Claude test double for substrate tests that need coding work without launching Claude Code or spending model tokens.
-- Expose the adapter through the runtime's ordinary record-selected capability surface, leaving the runtime's own reasoning and dispatch loop unchanged.
+- Add record-selected `fs` and `exec` capabilities for work in the agent's own sandbox and workspace. Their invocations and results go through the runtime's existing capability path and transcript.
+- Make coding assistants available as installed command-line programs in a reproducible agent image recipe. Start with Claude Code and Codex; the project-owned Dockerfile remains the source of truth for the image an agent runs.
+- Let an agent invoke an installed assistant headlessly through `exec`, using assistant credentials the sandbox already delivers by reference. Assistant selection and command construction belong to the agent, not to a provider-specific runtime adapter.
+- Exercise local file work, command execution, and headless assistant invocation in substrate tests, using a stub executable where a real assistant would spend tokens.
 
 ## Capabilities
 
 ### New Capabilities
 
-- `agent-assistant`: Starting, observing, completing, and stopping coding-assistant work through an implementation-independent interface and an ordinary agent capability.
+- `agent-workspace-tools`: Record-selected `fs` and `exec` operations inside the agent's sandbox, with observable results and failures.
+- `agent-assistant-toolchain`: A reproducible agent image recipe containing supported headless assistant CLIs that agents can call through `exec`.
 
 ### Modified Capabilities
 
-None.
+None. The existing runtime capability interface and sandbox process primitive remain the mechanism these new capabilities use.
 
 ## Impact
 
-- New adapter code and tests under `agent/`, with a capability declaration and construction at the runtime composition point.
-- The existing `cli/exec.ts` Claude Code launcher is reference material; the current task pipeline and published CLI remain separate.
-- The sandbox image must have Claude Code available for the real adapter; substrate tests can use the test double without it.
+- New local capability implementations and tests under `agent/`; the runtime's reasoning loop and supervisor routing do not gain assistant-specific paths.
+- An agent image recipe and checks for installed assistant commands. Projects continue to choose their image through the agent record and can build their own Dockerfile.
+- Existing credential references remain the source of assistant tokens; no token value is persisted in an agent record or passed in command arguments.
+- ENG-199's acceptance run can use a stub command for repeatable tests and a real installed assistant for its separate live pass.
