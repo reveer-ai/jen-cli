@@ -216,6 +216,14 @@ is not dropped — Node raises it as an uncaught exception and the process dies.
 running this is the supervisor, so one agent's broken pipe would end every other agent's
 run along with it.
 
+**There are two places this applies now, not one.** `sandbox/docker.ts` starts processes for
+the supervisor, and `runtime/workspace.ts`'s `exec` starts them for the agent — where the
+process that dies from an unlistened `error` is the agent itself, mid-turn, with its turn
+unreported. `exec` listens on all three of a child's pipes for that reason, and its `stdin`
+case is the ordinary one rather than the exotic one: a command that exits without reading
+its input breaks that pipe every time, and a command's exit status is the authority on
+whether it worked. A broken pipe on the way in is not a second opinion.
+
 **`child.on('error', …)` does not cover it**, and that is the part worth remembering. A
 failed write to standard input emits on `child.stdin`, never on `child`; the child listener
 catches a failure to *spawn* and nothing after. The reachable case here is the credential
@@ -291,6 +299,35 @@ Exactly one driver exists, so nothing independently exercises the interface in
 independence is held by reading it — `sandbox/index.test.ts` makes that reading a test,
 over the prose as well as the declarations. Keep it small enough to re-read in full, and
 re-read it in full when a second driver is written.
+
+## A capability name that was a placeholder is now a real capability
+
+Half the suite uses `fs` as the name of a made-up capability — `aCapability('fs')` handed to
+a `Runtime` directly — and that is still fine, because those tests supply the capability
+they name. **`entry.test.ts` is the one that is not fine**, because it runs the real
+`main.ts`, which since ENG-211 offers `fs` and `exec` for real.
+
+One test there named `fs` as the example of a capability a record asks for and nothing can
+resolve. It had been correct for as long as every shipped capability was a supervised one.
+Afterwards the process booted a perfectly good agent and sat waiting for a message that
+never came, and the test failed five minutes later as `Test timed out in 300000ms` — naming
+nothing, pointing at nothing, and looking exactly like a hang in whatever else had changed.
+
+So: **a name used to mean "unresolvable" has to be one no source offers**, and adding an
+entry to `SUPERVISED` or to `local()` means checking `entry.test.ts` for it. The general
+shape, worth recognising elsewhere: a test whose premise is an absence goes quiet rather
+than red when the absence is filled.
+
+## Writing an output flood in a test program takes `writeSync`, not `process.stdout.write`
+
+A loop around `process.stdout.write` looks like the way to make a program that floods its
+output, and on a pipe it is the way to make one that floods *its own memory*. Writes to a
+pipe are asynchronous: each call queues a chunk and returns, the loop never yields, so
+nothing is ever flushed and the reader sees nothing while the writer grows without bound.
+
+`writeSync(1, …)` blocks when the pipe is full, which is what a flooding command actually
+does, and is what lets the reader on the other end — `exec`'s output cap — be the thing that
+stops it. `assistant-stub.ts --flood` is written that way for exactly this reason.
 
 ## The substrate's manifest, and the entry point that needs no build
 

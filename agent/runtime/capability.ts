@@ -16,11 +16,16 @@
  * supervisor and wait for the answer. {@link dispatch} cannot tell them apart and neither
  * can the model — so an agent never *holds* the ability to spawn, it only asks.
  *
- * **Every capability that ships is a supervised one**, so this interface's other half — a
- * capability that does real work inside the sandbox — is exercised only by the test suite's
- * own. That is the sandbox's one-driver problem again and it gets the same answer: a trivial
- * capability in the tests, plus the requirement that an empty registry be valid, which is
- * what forces the loop to have no capability-specific branch to begin with.
+ * **Both halves of this interface now ship.** `spawn`, `stop`, `send` and `await` raise a
+ * request; `fs` and `exec` (`workspace.ts`) do their work in this process, inside the
+ * agent's own container, and raise nothing. That was not true when this file was written —
+ * every shipped capability was a supervised one and the local half was exercised only by
+ * the test suite's own — and the fact that adding the local half required no change here is
+ * the evidence for the paragraph above rather than a coincidence.
+ *
+ * What still holds the property, and is still worth keeping: the requirement that an empty
+ * registry be valid, which is what forces the loop to have no capability-specific branch to
+ * begin with.
  */
 
 /** What an invocation produced. `ok` is for the transcript; the model sees `content`. */
