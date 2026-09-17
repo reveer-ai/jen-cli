@@ -357,3 +357,18 @@ messages nobody, terminates nobody. Breaking a deadlock is a judgment about the 
 What a caller should *do* with that report — a log line, an exit, something an interface
 renders — is genuinely undecided, and the interface that would consume it does not exist yet.
 The callback is the smallest thing that does not pre-judge it.
+
+**A root waiting on a person it has actually messaged reads as stalled, and that is new.**
+`stalled` asks whether every live agent is `waiting` with an empty mailbox; a root that calls
+`send(HUMAN, …)` and then `await()` is exactly that, because the message left the tree and the
+reply — if one is coming — is a human's to send with `tell`. Before upward `send` existed no
+agent could put a question where only a person could answer it mid-turn, so every stall was a
+tree that could not move on its own. Now one shape of stall is a tree that is moving correctly
+and waiting for the party it just addressed.
+
+Do not "fix" this by excluding such a root from `stalled`. The condition is still reported
+truthfully — nothing in the tree can produce that message — and suppressing it would hide a
+root whose message went to an `onMessage` nobody is reading, which is the more likely failure
+while the interface is a line on standard error. It is the *caller* that has to tell the two
+apart, and it can: the report names who is waiting, and a root among them means ask the person.
+Whoever builds the interface this section says is still undecided owns that distinction.
