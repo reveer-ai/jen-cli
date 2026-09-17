@@ -128,6 +128,32 @@ describe('`fs` writes what it was given, exactly', () => {
     expect((await stat(join(workspace, 'notes.md'))).ino).not.toBe(before.ino);
   });
 
+  /**
+   * The rename that makes a write atomic also replaces the inode, and every permission bit
+   * with it. Editing a script is the ordinary case where that shows: the file comes back
+   * readable, the result says it succeeded, and the next thing to run it fails instead.
+   */
+  it('keeps the mode an existing file already had, so editing a script leaves it runnable', async () => {
+    const script = join(workspace, 'build.sh');
+    await writeFile(script, '#!/bin/sh\necho old\n');
+    await chmod(script, 0o755);
+
+    const result = await tool('fs').invoke(
+      { operation: 'write', path: 'build.sh', content: '#!/bin/sh\necho new\n' },
+      NEVER,
+    );
+    expect(result.ok).toBe(true);
+    expect((await stat(script)).mode & 0o777).toBe(0o755);
+    // The bit is only interesting because of what it lets happen next.
+    expect(execFileSync(script, { encoding: 'utf8' })).toBe('new\n');
+  });
+
+  it('gives a file that was not there the ordinary creation mode, carrying nothing over', async () => {
+    const result = await tool('fs').invoke({ operation: 'write', path: 'fresh.txt', content: 'new' }, NEVER);
+    expect(result.ok).toBe(true);
+    expect((await stat(join(workspace, 'fresh.txt'))).mode & 0o111).toBe(0);
+  });
+
   it('leaves the previous file whole when a write cannot complete, and no debris behind', async () => {
     if (process.getuid?.() === 0) return; // root writes to a read-only directory anyway.
 

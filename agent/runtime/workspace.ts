@@ -22,7 +22,7 @@
 import { spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import type { Stats } from 'node:fs';
-import { constants, lstat, open, readdir, realpath, rename, rm, writeFile } from 'node:fs/promises';
+import { chmod, constants, lstat, open, readdir, realpath, rename, rm, writeFile } from 'node:fs/promises';
 import { basename, isAbsolute, join, normalize, resolve as resolvePath, sep } from 'node:path';
 
 import type { AgentRecord } from '../record.ts';
@@ -374,6 +374,14 @@ function unreadable(stats: Stats): string {
  * An existing symbolic link at the target is refused rather than followed. Following one
  * would write wherever it points, which is a path check that validated one location and a
  * write that landed at another.
+ *
+ * An existing regular file's mode is carried onto the temporary before the rename, because
+ * the rename replaces the inode and with it every permission bit the old file had. Editing
+ * a script would otherwise take its execute bit away and report success, and the next run
+ * of it fails somewhere else entirely. The `chmod` is explicit rather than a `mode` passed
+ * to the create, since that one is masked by the process umask and would silently narrow
+ * what it was asked to preserve. A target that does not exist, or that is not a regular
+ * file, gets the ordinary creation mode — there is nothing to carry over.
  */
 async function write(workspace: string, path: unknown, content: unknown): Promise<CapabilityResult> {
   if (typeof content !== 'string') {
@@ -395,6 +403,7 @@ async function write(workspace: string, path: unknown, content: unknown): Promis
   const temporary = `${target}.${randomBytes(6).toString('hex')}.tmp`;
   try {
     await writeFile(temporary, content);
+    if (existing?.isFile()) await chmod(temporary, existing.mode & 0o7777);
     await rename(temporary, target);
   } catch (error) {
     await rm(temporary, { force: true }).catch(() => {});
