@@ -1,80 +1,118 @@
 ## Context
 
-ENG-194 needs an agent to inspect and change its own workspace, run local programs, and optionally ask a coding assistant for help. The runtime already exposes a record-selected `Capability` interface, but its production registry contains only capabilities that raise requests to the supervisor. The sandbox's `exec` primitive starts processes *for the supervisor*; it is not an agent-facing tool. An agent record already names an image, workspace, tool grants, and credential references. The Docker driver mounts only that agent's volume and delivers resolved credentials to the runtime process through a pipe, where they become environment variables.
+ENG-194 needs an agent that can look at its own workspace, change it, and run programs in it — one of which may be a headless coding assistant. None of that is reachable today. The runtime exposes a record-selected `Capability` interface, but every capability in the production registry raises a request to the supervisor; the sandbox's own `exec` starts processes *for the supervisor* and is not a tool the reasoning loop can call.
 
-The [proposal](proposal.md) uses those existing seams. It also supersedes two older spec statements that describe a separate coding-assistant adapter or configuration: `agent-runtime`'s reasoning-loop rationale and `agent-supervisor`'s spawn-inheritance requirement. The next specs artifact must update both requirements at requirement granularity. The reasoning model remains the agent's decision maker; a headless assistant is a child process the agent may choose to invoke.
+The seams this needs already exist. `resolveCapabilities` (`agent/runtime/capability.ts:89`) builds a registry from the record's `tools`, `dispatch` invokes anything in it without knowing what it is, and the transcript records every call and result. The record already names a `workspace`, an `environment`, its tool grants, and its credential references. The Docker driver mounts that agent's volume and nothing else, sets the container's working directory to the workspace (`agent/sandbox/docker.ts:296–317`), and delivers resolved credentials over each process's standard input, where a shell prologue exports them and then `exec`s the real command (`docker.ts:89`). So the runtime process already holds the credentials in its own environment, and a child it spawns inherits them without a secret passing through an argument or a file.
+
+The [proposal](proposal.md) also retires this change's original framing. Two existing spec statements describe reaching an assistant through an adapter — `agent-runtime`'s reasoning-loop rationale and `agent-supervisor`'s spawn-inheritance requirement — and the specs artifact must revise both at requirement granularity. The reasoning model remains the agent's decision maker. A headless assistant is a child process the agent may choose to start, and is not otherwise special.
 
 ## Goals / Non-Goals
 
 **Goals:**
 
-- Let a record grant `fs` and `exec` independently, with calls and outcomes recorded by the existing runtime transcript path.
-- Make workspace file operations predictable and confined to the agent's mounted workspace; make command execution work in the same container as the runtime.
-- Provide a reproducible reference image recipe with Claude Code and Codex installed, plus accurate agent-facing guidance for using those commands through `exec`.
-- Use the record's existing credential references and process environment, with no assistant token in an image, agent record, command argument, or new credential store.
-- Test the boundary with a stub assistant executable without spending assistant tokens.
+- Let a record grant `fs` and `exec` independently, each dispatched and recorded through the path every other capability already uses.
+- Confine `fs` to the agent's mounted workspace, and bound what it returns.
+- Run a command as a direct child of the runtime process, with the credentials the sandbox already delivered, and return its outcome as data the model can act on.
+- Guarantee that no command can wedge an agent indefinitely.
+- Give the agent enough guidance to use an installed assistant well, without any assistant appearing in the code.
+- Prove all of it against a stub executable, spending nothing.
 
 **Non-Goals:**
 
-- A provider-specific assistant adapter, assistant-specific runtime API, assistant selection policy, or a separate assistant field in the agent record.
-- A new supervisor request, sandbox driver operation, long-running job manager, or change to the reasoning loop's turn boundary.
-- Building or selecting a default project image on behalf of the project. The record's `environment` still selects the image that project built.
-- Automatically discovering or granting credentials, or promising that every authentication mode of every CLI works from an environment variable alone.
+- An assistant adapter, an assistant-specific runtime API, an assistant selection policy, or an assistant field in the record.
+- An image, a Dockerfile, or any live credential verification. That moved to ENG-199 with the real Claude Code pass; this change is complete and testable with no Docker build.
+- A new supervisor request, a new sandbox driver operation, a change to the protocol, or a change to the loop's turn boundary.
+- External cancellation of a running call. See Decision 5.
+- A durable background job. A command belongs to the turn that started it.
 
 ## Decisions
 
-### 1. Resolve local capabilities beside supervised ones
+### 1. Local capabilities join the registry beside supervised ones
 
-Create local `Capability` implementations under `agent/runtime/` (or a sibling local-capabilities module) and add them to the production registry assembled in `runtime/main.ts`. `resolveCapabilities` still selects only names present in the agent record and still fails on unknown names. `fs` and `exec` implement `invoke` directly in the runtime process. They emit no supervisor request; the existing dispatcher records their call, result, duration, and success. The supervisor's sandbox `exec` remains the way the supervisor starts the runtime, not a second path for agent tool calls.
+Add a module under `agent/runtime/` exporting a factory that takes the record and returns the local `Capability` implementations. `main.ts` composes the registry from both sources — `[...SUPERVISED.map((d) => supervised(d, raise)), ...local(frame.record)]` — and `resolveCapabilities` selects from it by the record's `tools` exactly as before, still failing construction on a name it cannot resolve.
 
-This uses the interface already intended for sandbox-local work. Routing each file read or child process through the supervisor would add a request and authority path with no benefit for work already inside that agent's container. Putting assistant handling in the reasoning loop would make one tool special and couple it to a CLI provider.
+Nothing else changes. `capability.ts`, `dispatch`, and the loop gain no branch, which is the property `capability.ts` was written to hold: an agent at depth four runs the same bytes as the agent nobody spawned. A local capability differs from a supervised one only in what its `invoke` does, and `dispatch` cannot tell.
 
-### 2. Give `fs` a small, workspace-relative contract
+The factory takes the record because `fs` needs `workspace` and both need it to be *this* agent's. Routing local work through the supervisor instead would add a request, a correlation, and an authority boundary for work already inside the agent's own container, and would make the supervisor the bottleneck for every file read in the tree.
 
-Expose one `fs` capability with explicit operations to list a directory, read a file, and write a file. Inputs use paths relative to `record.workspace`; a root listing uses `.`. Return file content or entry metadata as bounded text in `CapabilityResult.content`, and report invalid input, missing files, and OS errors as failed results the agent can react to. A write replaces the requested file's contents; callers use `exec` for patching, search tools, or bulk changes. No implicit directory creation or host path selection is needed.
+**One file-level doc comment becomes false and must be corrected in the same change.** `capability.ts` currently says every capability that ships is a supervised one, and that the interface's other half is exercised only by the test suite. That was accurate when written and stops being accurate here.
 
-Validate the input at runtime despite the model-facing JSON Schema. Reject absolute paths, parent traversal, and paths whose existing components resolve through a symlink outside the workspace. For writes, validate the parent and refuse an existing symlink target; create the replacement in the same directory and rename it into place so an interrupted write does not leave a partial file. Keep file reads and directory listings bounded so a mistaken request does not fill a model context or runtime memory. Avoid making `fs` an allowlist for `exec`: it has a narrower path contract, while `exec` intentionally exposes the container's command environment.
+### 2. `fs` is one grant with three operations
 
-The alternative was a broad filesystem API with patch and search operations. The three operations cover direct inspection and replacement; installed command-line tools cover the rest without making this task another editor implementation.
+Expose a single `fs` capability whose input names an operation — list a directory, read a file, write a file — with paths relative to `record.workspace` and `.` for the root. One capability rather than three named grants, because the grant is the unit of authority and `fs` without `exec` is the configuration worth having: an agent that can read and cannot run.
 
-### 3. Execute argv in the current container and return bounded output
+Return listings and file content as bounded text in `CapabilityResult.content`. Invalid input, a missing file, and an OS error are all `ok: false` results the model can read and react to, never throws — `dispatch` would convert them anyway, and a capability that reports its own failures says something more useful than a stringified exception.
 
-Expose one `exec` capability with an `argv` array, optional text `stdin`, and optional workspace-relative `cwd` (default: workspace root). Spawn the named executable directly without an implicit shell. If a shell is wanted, the agent explicitly supplies `sh`, `-lc`, and its command. Close stdin after the supplied input, drain stdout and stderr concurrently, and return exit code or signal plus separately identified, bounded stdout and stderr. A nonzero exit, signal, spawn failure, malformed input, or abort is an `ok: false` result rather than a fatal runtime error. Honor the capability's abort signal by terminating the child and its process group where the platform permits. A command runs within the current turn; it is not a durable background job and is lost if the container is destroyed.
+Validate paths at invocation despite the JSON Schema, which is a guide to the model and not a trust boundary. Reject absolute paths and parent traversal, resolve the path, and require the result to remain under the workspace so a symlink cannot lead out of it. For a write, validate the parent, refuse an existing symlink at the target, write a temporary file in the same directory and rename it into place, so an interrupted write leaves either the old file or the new one and never half of either.
 
-The direct-child approach lets a headless CLI inherit the runtime process's credential environment without moving secrets through tool arguments or another supervisor request. Supplying prompts over `stdin` keeps large or sensitive prompts out of argv. An implicit shell would add quoting and injection hazards to every call. Arbitrary command execution is deliberately broad *inside the sandbox*: changing `cwd` does not confine commands to the workspace, and a tool grant must be treated accordingly.
+A write replaces a whole file. Patching, searching and bulk edits are what `exec` and the installed command-line tools are for; re-implementing them here would make this task an editor.
 
-### 4. Ship a reference image recipe, not an image selector
+**`fs` is not a narrower `exec`, and the specs must not imply it is.** For an agent holding both, `exec` is the wider authority and `fs`'s path confinement constrains nothing — the value of `fs` to that agent is bounded output and structured failures, not containment.
 
-Add an `agent/` image recipe and build instructions based on a pinned Node 22.18+ image. Install the agent runtime's dependencies and pinned releases of `@anthropic-ai/claude-code` and `@openai/codex` in that image, verify both executable names during build, and make no network authentication call at build time. Projects can extend or replace this Dockerfile and put their resulting image reference in `AgentRecord.environment`; the Docker driver continues to build nothing and choose no default. Pinning the CLI versions makes a rebuilt reference image reviewable. Updating them is an explicit project/image change.
+### 3. `exec` runs argv in this container and keeps the tail
 
-The official CLIs expose noninteractive entry points: [Claude Code `claude -p`](https://code.claude.com/docs/en/headless) and [Codex `codex exec`](https://learn.chatgpt.com/codex/non-interactive-mode). Their [installation instructions](https://code.claude.com/docs/en/setup) and [Codex repository](https://github.com/openai/codex/blob/main/README.md) support npm installation. The design does not invent an assistant protocol: commands and flags stay owned by each CLI.
+Expose one `exec` capability taking an `argv` array, optional text `stdin`, and an optional workspace-relative `cwd` defaulting to the workspace root. Spawn the named executable directly with no implicit shell; an agent that wants a shell passes `sh`, `-lc` and its command, and says so in the transcript by doing it. Close stdin after the supplied input, drain stdout and stderr concurrently, and return the exit code or terminating signal with the two streams separately identified. A nonzero exit, a signal, a spawn failure, malformed input, or a deadline is `ok: false` with the output attached.
 
-### 5. Put practical guidance where the agent can read it
+Two properties carry most of the value:
 
-The `fs` and `exec` tool descriptions explain their scope, syntax, result shape, and when a direct tool call is sufficient. The `exec` description says an installed headless assistant can be called for substantial coding work, shows `claude -p` and `codex exec -` with the prompt supplied on stdin, and tells the agent to check command availability and inspect the resulting changes. Keep this description conditional in wording: the reference image contains both CLIs, but a custom image may not. Ship a short charter guidance example alongside the image recipe so whoever constructs an agent can state which assistants are available, when to use one, and which credentials the environment supplies. That example is a template for the caller, not a hidden system instruction or automatic routing rule. Existing charters remain the first system context; record tool grants remain the authority boundary.
+**Output is bounded by keeping the tail, through a fixed-size ring buffer per stream.** Every form of assistant output puts the payload last — Claude Code's `--output-format json` is a single closing object, its `stream-json` ends with that same object, plain text ends with the closing summary. Truncating from the front discards exactly the part worth having. The ring buffer is also what bounds memory: a process emitting gigabytes costs a constant, since draining continues while the earlier bytes are dropped. A truncated result says so and says how much went, rather than silently presenting a fragment as the whole.
 
-Assistant authentication comes from the existing environment names supplied by credential references. For example, Claude can consume `ANTHROPIC_API_KEY` or a supported Claude OAuth token; Codex's documented noninteractive API-key path uses `CODEX_API_KEY`. [Codex authentication documentation](https://learn.chatgpt.com/docs/auth) describes a separate login flow for a ChatGPT access token, so this design does not claim direct `codex exec` OAuth-token environment support. A live check must confirm each configured credential mode against the pinned CLI version before it is offered as a supported image configuration.
+**Credentials reach the child by inheritance and by nothing else.** The prologue has already exported them into the runtime process's environment, so an ordinary spawn is sufficient and no secret passes through `argv`, a file, or another request. Supplying a prompt on `stdin` keeps a large or sensitive prompt out of `argv` too, which is why `stdin` is part of the contract rather than an afterthought.
 
-### 6. Test each boundary at the level that can prove it
+**`cwd` is a convenience, not a boundary.** It selects where the command starts; it does not confine it. `exec` is arbitrary execution inside the container and is designed as such — the container is the boundary, and a grant of `exec` must be read that way.
 
-Unit tests exercise grant selection, `fs` path validation including symlink escape, atomic replacement, `exec` argv/stdin/cwd behavior, output bounds, nonzero exits, and a fake `claude` or `codex` executable that records the intended stdin while returning deterministic output. A runtime entry test verifies the local tool result appears in the transcript and does not emit a supervisor request. A reference-image smoke check builds the image and checks the installed command versions; a separate credentialed live pass can run an actual headless assistant when ENG-199 exercises end-to-end acceptance. No unit test needs a real assistant account.
+### 4. One fixed deadline, because nothing else will ever stop a command
+
+`exec` enforces a single wall-clock deadline: a generous named constant in the capability module, not a parameter and not one of a pair of bounds. On expiry it signals the child's process group — `SIGTERM`, then `SIGKILL` after a short grace — and returns `ok: false` carrying the output captured so far and how it ended. It spawns the child into its own process group precisely so this works: a coding assistant starts children of its own, and signalling only the direct child leaves them running.
+
+**Nothing else in the substrate would ever end a stuck call.** The supervisor arms a residency timer only at `#turn` (`agent/supervisor/index.ts:574`) and `#awaiting` (`:657`), both states an agent reaches by *finishing* something. A body blocked inside `dispatch` is `working` and has no timer at all, and the loop awaits each call in turn (`runtime/index.ts:166`), so one command that never returns is an agent that never returns.
+
+**It bounds elapsed time rather than silence, because only that is complete.** Bounding silence catches a wedged process sooner, which is its whole advantage, and misses the process that emits forever without finishing — a watch-mode command, a build loop. Keeping the tail obliges `exec` to drain to the end, so an output cap cannot stop one either. That leaves the permanent wedge intact, which is the failure this exists to prevent. A second mechanism that covers the fast case and leaves the hole open is worse than one that closes it.
+
+**It is fixed rather than named by the agent**, which is where it parts from `residency`. Residency is a cost-against-latency trade the agent alone can weigh, having just decided what it dispatched; `agent-supervisor` argues at length that a constant deciding it would be policy in code. A deadline is the opposite kind of thing — a liveness guarantee the substrate owes whatever the agent believes, and an agent that can name it can disable it. Set generously, no real assistant run is at risk, so the cost of the guarantee is wall-clock on an otherwise idle container.
+
+`invoke`'s `signal` is honored as well, since doing so costs nothing and is the right home if suspension ever gains a graceful path. It is not the mechanism: nothing fires that signal today (`runtime/index.ts:132` constructs an `AbortController` and discards it).
+
+### 5. External cancellation is deliberately absent
+
+Every path that would stop a working agent already destroys its container — residency expiry, a parent dismissing a child, and shutdown all reach `#suspend` (`agent/supervisor/index.ts:507`), which syncs the log and calls `sandbox.destroy()`. The child dies with the container.
+
+What the log then holds is a `tool_call` with no `tool_result`, and `answerInterrupted` (`runtime/events.ts:239`) already answers it on the next boot: a failed result saying the call was interrupted, that whether it took effect is unknown, and that it was not retried. The call is deliberately not re-executed. So an assistant run killed mid-flight is not silently paid for twice, and the agent is told enough to go and look.
+
+Building a graceful stop would mean giving the `stop` frame a sender — `protocol.ts:107` defines it and `main.ts:316` handles it, but nothing in the supervisor emits it, and `main.ts:316`'s `break` only leaves the read loop before `await turns` blocks on the same call. Making it reachable is a supervisor sequencing change belonging to `agent-supervisor`, and it would buy a recorded "aborted" in place of a recorded "interrupted". Not worth it here.
+
+### 6. Guidance goes where the agent will read it, and names no policy
+
+The `fs` and `exec` descriptions state their scope, input shape, result shape, and when a direct call is enough. The `exec` description adds that a headless coding assistant may be installed and worth using for substantial work; that its availability should be checked rather than assumed, since the image is the project's choice; that the way to ask for an answer that is already small is a single-object output form such as `claude -p --output-format json`, whose closing summary, usage and error flag are the whole of what an agent needs; and that the assistant-neutral account of what actually changed is the workspace itself, through `git diff --stat`, rather than any CLI's event stream.
+
+Ship a short charter template beside the capability, for whoever constructs an agent to say which assistant their image holds and which credentials the environment supplies. It is a template for the caller, not a hidden system prompt and not a routing rule — assistant choice stays the agent's judgment, and the transcript records the `argv`, so which assistant was chosen and whether one was chosen at all is auditable afterwards. That auditability is what makes guidance an acceptable substitute for a rule in code.
+
+Guidance also covers the interrupted result from Decision 5: inspect the workspace before re-running, because the effect may already have landed.
+
+### 7. Test each boundary at the level that can prove it
+
+Unit tests cover grant selection for `fs` and `exec` independently; `fs` path validation including a symlink leading out of the workspace, atomic replacement, and read bounds; `exec` argv without a shell, `stdin` delivery, `cwd`, separate stream capture, nonzero exit, spawn failure, and tail-keeping with an explicit truncation report.
+
+The deadline gets its own tests, because it is the one guarantee here: a child that ignores `SIGTERM` is still gone after the grace, a child that has forked grandchildren leaves none behind, and the result reports the deadline with the output captured up to it.
+
+A runtime-level test asserts that a local capability's result reaches the transcript and that no supervisor request is emitted for it — the property Decision 1 rests on.
+
+A stub executable stands in for an assistant: it records the prompt it received on `stdin` and prints a canned single-object result, which is enough to exercise the whole path. No test starts a real assistant, needs an account, or needs Docker.
 
 ## Risks / Trade-offs
 
-- **Generic `exec` can run any command inside the container, including commands that print environment variables.** → Grant it only to agents that need it; retain the sandbox's isolated volume and absence of host mounts or daemon socket; keep credentials as references in records. Tool results and transcripts are not a secret-redaction boundary, so agent guidance must not ask for `env` dumps or echo tokens.
-- **A local process can hang or produce unbounded output.** → Drain both streams, cap returned and buffered output, honor abort, and make interruption visible as a failed result. The current runtime does not actively abort ordinary tool calls; container teardown remains the final stop for a stuck process until a later task adds stronger turn-level cancellation.
-- **`fs` path checks race with filesystem changes.** → Resolve and validate immediately before each operation and reject symlink targets; document that the container boundary, not path validation, is the security boundary against a malicious process already holding `exec`.
-- **CLI versions, flags, and auth modes can change.** → Pin versions, keep invocations in versioned image guidance, smoke-test executable presence, and check live auth modes against those versions. Rebuilds require deliberate version bumps.
-- **Broad `exec` authority can bypass future narrow git tools inside the container.** → Treat `exec` as a broad grant when designing ENG-203's git policy; do not claim a narrower file or git policy for an agent granted `exec`.
+- **`exec` is arbitrary execution inside the container, including commands that print the environment.** → The sandbox's existing position stands and should be cited rather than re-litigated: an agent holds its own credentials, restriction concerns egress, and that is acceptable while the substrate runs on its operator's own machine (`openspec/specs/agent-sandbox/spec.md:232`). What is new is that a secret can now reach the **transcript**, which outlives the container. The sandbox's prohibition is scoped to what creation writes, so nothing breaks, but the specs artifact must say this rather than leave it to be inferred. Grant `exec` deliberately, and never write guidance that asks an agent to echo its environment.
+- **A generous deadline means a wedged command holds a container for a long time.** → Accepted, and the alternative is worse in both directions: a short deadline kills real assistant work, and a second silence-based bound leaves the permanent wedge open. The cost is wall-clock on an idle container, not tokens.
+- **Tail-keeping can drop something the agent needed.** → Report the truncation and its size so the model knows it is reading the end of something, and size the buffers for a single-object assistant result with room to spare. An agent that needs more has `fs` and can redirect output to a file.
+- **`fs` path validation races with the filesystem.** → Resolve and check immediately before each operation and refuse symlinked targets, and state plainly that the container is the security boundary — path validation does not defend against a hostile process that already holds `exec`.
+- **A broad `exec` grant can bypass any narrower tool added later.** → Treat it as broad when ENG-203 designs git policy, and do not claim a narrower file or git policy for an agent that holds `exec`.
 
 ## Migration Plan
 
-1. Add the local registry entries and tests without changing existing records. Agents without `fs` or `exec` continue to see their current tools.
-2. Add the pinned reference Dockerfile and guidance. Build it, check `claude --version` and `codex --version`, and run the stub invocation test. Projects opt in by building an image and naming it in the agent record.
-3. Grant `fs` and/or `exec` in records and, where assistant use is intended, provide the appropriate credential references and charter. Confirm a live headless call separately before treating an auth mode as supported.
-4. In the specs artifact, update the two stale adapter/configuration statements named above. Rollback is to remove the grants or select the prior image; neither records nor supervisor protocol require migration.
+1. Add the local capability module, register it in `main.ts`, and correct `capability.ts`'s file comment. Records that name neither `fs` nor `exec` are unaffected; an agent's offered tools change only when its record does.
+2. Grant `fs` and/or `exec` in a record and supply the charter guidance. Rollback is removing the grant — no record migration, no protocol change, no supervisor change.
+3. ENG-199 supplies the image with an assistant installed and verifies headless authentication live. Until then the stub is the only assistant this change is tested against, which is sufficient for everything it specifies.
 
 ## Open Questions
 
-- Which Codex OAuth token form, if any, can run fully headlessly with the pinned CLI without writing a login file? Until verified, the supported Codex path is `CODEX_API_KEY`; the design does not block API-key use or Claude OAuth use on this question.
-- What output and file-size caps best balance useful coding output with the reasoning model's context? Implementation should choose explicit, tested limits and report truncation rather than silently clipping.
+- **What deadline, and what output caps?** Both are single constants and implementation should choose them, test them explicitly, and write the reasoning beside them. The deadline wants to sit comfortably above a substantial assistant run; the caps want to hold a single-object assistant result with room to spare. Neither is a parameter, so getting them wrong is a one-line change with evidence behind it rather than an interface revision.
