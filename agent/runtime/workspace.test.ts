@@ -11,6 +11,7 @@
  * record or from a call, so what the agent cannot set stays unsettable while a test still
  * gets to prove the mechanism.
  */
+import { execFileSync } from 'node:child_process';
 import { chmod, mkdir, mkdtemp, readdir, readFile, realpath, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -44,6 +45,22 @@ function offered(tools: string[], bounds?: Parameters<typeof local>[1]): Map<str
 
 function tool(name: 'fs' | 'exec', bounds?: Parameters<typeof local>[1]): Capability {
   return offered([name], bounds).get(name)!;
+}
+
+/**
+ * The call's result, or a failure that names the wait.
+ *
+ * For the tests below whose regression is an *absence* of a result rather than a wrong one.
+ * Left to the suite's own timeout, such a test reports `Test timed out in 5000ms` and names
+ * nothing — the same trap `AGENTS.md` records from the last time a test's premise went quiet
+ * instead of red. Raced against this, it says which call never came back.
+ */
+function promptly<T>(work: Promise<T>, what: string): Promise<T> {
+  let timer: NodeJS.Timeout | undefined;
+  const late = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`${what} had still not returned after 2s`)), 2_000);
+  });
+  return Promise.race([work, late]).finally(() => clearTimeout(timer));
 }
 
 describe('a record decides which of the two an agent holds', () => {
@@ -204,6 +221,45 @@ describe('`fs` answers rather than raising', () => {
     const result = await tool('fs').invoke({ operation: 'write', path: 'nowhere/a.txt', content: 'x' }, NEVER);
     expect(result.ok).toBe(false);
     expect(result.content).toMatch(/directory holding "nowhere\/a\.txt" does not exist/);
+  });
+
+  it('refuses a named pipe rather than waiting for a writer that may never come', async () => {
+    // `fs` owes the same guarantee `exec` does, by a different route. `exec` bounds elapsed
+    // time; `fs` never starts a wait it cannot end — and opening a FIFO for reading is
+    // exactly such a wait, because it lasts until something else opens the other end. A
+    // workspace is a directory its agent can `mkfifo` into, so this is reachable, and if it
+    // is reached the agent's turn never finishes: nothing outside the capability ends a
+    // capability call in progress.
+    execFileSync('mkfifo', [join(workspace, 'pipe')]);
+
+    const result = await promptly(
+      tool('fs').invoke({ operation: 'read', path: 'pipe' }, NEVER),
+      'reading a named pipe',
+    );
+
+    expect(result.ok).toBe(false);
+    expect(result.content).toMatch(/named pipe/);
+    // Named as a pipe, and pointed at the tool that can actually read one.
+    expect(result.content).toMatch(/`exec`/);
+  });
+
+  it('refuses to read a directory, and says which operation reads one', async () => {
+    await mkdir(join(workspace, 'src'));
+
+    const result = await tool('fs').invoke({ operation: 'read', path: 'src' }, NEVER);
+
+    expect(result.ok).toBe(false);
+    expect(result.content).toMatch(/directory/);
+    expect(result.content).toMatch(/`list`/);
+  });
+
+  it('still reads an ordinary file whole, which is what the check must not cost', async () => {
+    await writeFile(join(workspace, 'a.txt'), 'the ordinary case\n');
+
+    const result = await tool('fs').invoke({ operation: 'read', path: 'a.txt' }, NEVER);
+
+    expect(result.ok).toBe(true);
+    expect(result.content).toBe('the ordinary case\n');
   });
 
   it('lists a directory, marking which entries are directories', async () => {

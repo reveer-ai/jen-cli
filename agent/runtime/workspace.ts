@@ -21,7 +21,8 @@
  */
 import { spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
-import { lstat, open, readdir, realpath, rename, rm, writeFile } from 'node:fs/promises';
+import type { Stats } from 'node:fs';
+import { constants, lstat, open, readdir, realpath, rename, rm, writeFile } from 'node:fs/promises';
 import { basename, isAbsolute, join, normalize, resolve as resolvePath, sep } from 'node:path';
 
 import type { AgentRecord } from '../record.ts';
@@ -312,11 +313,28 @@ async function list(workspace: string, path: unknown, limit: number): Promise<Ca
  * Reads one byte past the limit rather than the whole file, so a result that is going to be
  * cut costs a buffer of the limit's size rather than a buffer of the file's — which matters
  * because "read the repository's lockfile" is a thing an agent will try.
+ *
+ * **`O_NONBLOCK` is on the open, because the open is the part that can hang.** Opening a
+ * FIFO for reading waits for a writer to arrive, and a workspace is a directory its agent
+ * can `mkfifo` into — so a plain `open` is a call that may never come back. Nothing in the
+ * substrate would end it: {@link DEADLINE} is `exec`'s and bounds nothing here, and a body
+ * inside `dispatch` is `working`, which is precisely the state the supervisor arms no timer
+ * for. The turn would stop there and so would the agent. With the flag the open returns at
+ * once whatever the path names, and on a regular file the flag does nothing whatsoever.
+ *
+ * Then the handle's own `stat` decides what was opened, rather than a `stat` of the path
+ * taken before it: a check of the path establishes a fact about the path, while what gets
+ * read is the open file description, so asking the thing that is already open leaves
+ * nothing to be swapped in between. Anything that is not a regular file is refused — the
+ * bound this capability owes is on its own elapsed time, and no other kind of file can
+ * promise that.
  */
 async function read(workspace: string, path: unknown, limit: number): Promise<CapabilityResult> {
   const target = await place(workspace, path, 'self');
-  const handle = await open(target, 'r');
+  const handle = await open(target, constants.O_RDONLY | (constants.O_NONBLOCK ?? 0));
   try {
+    const stats = await handle.stat();
+    if (!stats.isFile()) throw new Refused(`"${String(path)}" is ${unreadable(stats)}`);
     const buffer = Buffer.alloc(limit + 1);
     const { bytesRead } = await handle.read(buffer, 0, limit + 1, 0);
     const { text, cut } = bound(buffer.subarray(0, bytesRead), limit);
@@ -324,6 +342,24 @@ async function read(workspace: string, path: unknown, limit: number): Promise<Ca
   } finally {
     await handle.close();
   }
+}
+
+/**
+ * What the path turned out to be, phrased so the refusal says where to go instead.
+ *
+ * A directory is the ordinary mistake and its answer is in this same capability. The rest
+ * are refused because `read` cannot bound them: a pipe or a socket carries bytes when
+ * something else decides to send them, which is a wait with no end of its own, and a device
+ * is whatever its driver is. `exec` can read any of them, and says so here, because `exec`
+ * is the one that holds a deadline.
+ */
+function unreadable(stats: Stats): string {
+  if (stats.isDirectory()) return 'a directory; `list` is what reads one';
+  if (stats.isFIFO()) {
+    return 'a named pipe, and reading one waits for whoever writes it; read it with `exec`, which has a deadline';
+  }
+  if (stats.isSocket()) return 'a socket rather than a file; anything that talks to one belongs in `exec`';
+  return 'not a regular file, and only a regular file can be read within a bound';
 }
 
 /**

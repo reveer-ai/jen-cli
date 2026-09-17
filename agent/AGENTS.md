@@ -268,6 +268,30 @@ shell's stdout, so `close` waits for it and the bug is invisible. Spawn it with
 `stdio: 'ignore'` and a `trap "" TERM`, and clean the pid up in a `finally` — a test for a
 process leak that leaks the process when it fails is not worth much.
 
+## A local capability has no timer behind it, so `open` is not the safe call it looks like
+
+The runtime arms nothing for a capability that is *working*. The supervisor's residency
+timer is set at `#turn` and `#awaiting`, both states an agent reaches by finishing
+something, and the loop awaits each call in turn — so a capability that blocks blocks the
+agent, permanently, and the `AbortSignal` handed to `invoke` is a courtesy rather than a
+guarantee. `exec` carries its own deadline for this reason. Everything else has to avoid
+starting a wait it cannot end.
+
+**`open(path, 'r')` is such a wait.** Opening a FIFO for reading blocks until something
+opens the write end, and a workspace is a directory its own agent can `mkfifo` into, so the
+path is reachable from a model's own output. The read never returns, the turn never ends,
+and nothing anywhere reports it. `constants.O_RDONLY | constants.O_NONBLOCK` is what makes
+the open return regardless of what the path names, and on a regular file it changes nothing.
+
+**Ask the handle what it opened, not the path.** `stat(path)` then `open(path)` proves a
+fact about the name and then reads a different object; `open` then `handle.stat()` asks the
+open file description itself, so there is no window to swap anything into. It also costs one
+syscall rather than two.
+
+Reads look like the operation that cannot hang, which is exactly why this one got shipped:
+the path checks in `place` are about *where* a path leads and say nothing about *what* is
+there, and every test in the suite pointed them at regular files.
+
 ## Asking whether a workspace exists: `volume ls`, never `volume inspect`
 
 `docker volume inspect` exits non-zero both when the workspace is absent and when the
