@@ -123,15 +123,19 @@ export function local(record: AgentRecord, bounds: Bounds = {}): Capability[] {
  * which credentials its environment supplies. `exec`'s description tells it to check rather
  * than assume; this is where the answer goes.
  *
- * The `{...}` are the caller's to fill in or delete. It is deliberately short — a charter
- * is the first thing in an agent's conversation and stays there for the whole of its life.
+ * The `{...}` are the caller's to fill in or delete, and every one of them is a placeholder
+ * rather than an example. Writing a real command or a real credential variable here — even
+ * as an illustration — would put a particular assistant's name in the substrate, which is
+ * the one thing this capability may not do; the caller knows which assistant its image
+ * installs and this file must not. It is deliberately short — a charter is the first thing
+ * in an agent's conversation and stays there for the whole of its life.
  */
 export const WORKSPACE_CHARTER = `Your workspace is yours and it persists: what you write to it survives this container,
 and it is the record of what you actually did.
 
-Your image provides {the assistant command, e.g. \`claude\`, or: no coding assistant}.
-{Its credentials, e.g. ANTHROPIC_API_KEY, are already in your environment — you never
-supply one.} Check a command is there before you rely on it.
+Your image provides {the coding assistant command, or: no coding assistant}.
+{Its credentials are already in your environment under {the variable it reads} — you
+never supply one.} Check a command is there before you rely on it.
 
 If a tool result ever says the call was interrupted, the command may already have done
 its work. Look at the workspace before you run it again.`;
@@ -499,6 +503,7 @@ async function run(
   const child = spawn(argv[0]!, argv.slice(1), { cwd, detached: true, stdio: ['pipe', 'pipe', 'pipe'] });
 
   let killing: NodeJS.Timeout | undefined;
+  let terminated = 0;
   /**
    * End the command, and then end it for real.
    *
@@ -509,6 +514,7 @@ async function run(
    */
   const terminate = (): void => {
     if (killing !== undefined || child.pid === undefined) return;
+    terminated = Date.now();
     group('SIGTERM');
     killing = setTimeout(() => group('SIGKILL'), bounds.grace);
     killing.unref();
@@ -526,6 +532,46 @@ async function run(
         /* already gone */
       }
     }
+  };
+  /**
+   * Whether anything is still in the group. `signal 0` asks without sending anything.
+   *
+   * `EPERM` is a yes: something is there and is not ours to signal. Every other failure —
+   * `ESRCH` for an empty group, or a platform that will not take a negated pid at all — is
+   * taken as a no, because the alternative is waiting out the grace on every terminated
+   * call for a group that cannot be probed.
+   */
+  const remaining = (): boolean => {
+    if (child.pid === undefined) return false;
+    try {
+      process.kill(-child.pid, 0);
+      return true;
+    } catch (error) {
+      return code(error) === 'EPERM';
+    }
+  };
+  /**
+   * Finish the escalation the child's own exit does not finish.
+   *
+   * **`close` is not the end of the group.** It says the process we spawned is gone and
+   * says nothing about the children it started: a grandchild holding none of the child's
+   * pipes lets `close` fire while it is still running, and one ignoring `SIGTERM` is still
+   * running. Cancelling the pending `SIGKILL` there — the obvious thing to do once the
+   * thing you were waiting on has closed — cancels the only signal that would ever have
+   * reached it, and the result then claims a termination that did not happen.
+   *
+   * So the escalation outlives the child, and the call waits for it rather than leaving it
+   * to a timer this process may exit before firing. An empty group costs nothing, which is
+   * every command that ended on its own; only a group with something still in it pays what
+   * is left of the grace.
+   */
+  const sweep = async (): Promise<void> => {
+    if (killing === undefined) return;
+    clearTimeout(killing);
+    if (!remaining()) return;
+    const left = bounds.grace - (Date.now() - terminated);
+    if (left > 0) await new Promise<void>((done) => setTimeout(done, left));
+    if (remaining()) group('SIGKILL');
   };
 
   const take = (stream: NodeJS.ReadableStream, into: 'stdout' | 'stderr'): void => {
@@ -589,8 +635,8 @@ async function run(
     settle(closed);
   } finally {
     clearTimeout(timer);
-    if (killing !== undefined) clearTimeout(killing);
     signal.removeEventListener('abort', abort);
+    await sweep();
   }
 
   return report(ending!, collected, cut, bounds);

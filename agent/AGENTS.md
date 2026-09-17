@@ -242,6 +242,32 @@ exit where it has one (its stderr says more about why than the pipe does), and a
 rejection where the subprocess exited *zero* — because a command that ran without the
 credentials it was sent looks exactly like one that had them.
 
+## `close` on a child is not the end of its process group
+
+`exec` spawns `detached` so the child leads a process group, and terminates by signalling
+the negated pid — `SIGTERM`, then `SIGKILL` after a grace — so that a build, a test runner
+or an assistant takes its own children with it. The trap is what happens in between.
+
+**The child's `close` says nothing about the group.** It fires when the process we started
+has exited *and* its stdio has closed, and a grandchild that holds none of the child's pipes
+satisfies both while still running. So the obvious tidy-up — clearing the deferred `SIGKILL`
+in the `finally` that runs once `close` resolves — cancels the only signal that would ever
+have reached a descendant ignoring `SIGTERM`, and the result then says the command "and
+anything it had started" was terminated when one of them is still running. It leaks past the
+agent, past the run, and past the test suite, because nothing else knows that pid.
+
+The escalation therefore outlives the child, and the call waits for it rather than leaving it
+to a timer this process may exit before firing. `process.kill(-pid, 0)` is what makes that
+cheap: an empty group answers `ESRCH` and the call returns immediately, which is every
+command that ended on its own, so only a group with something still in it pays what is left
+of the grace. `EPERM` from that probe is a yes — something is there and is not ours.
+
+**Testing it takes a grandchild that both ignores `TERM` and holds no pipe**; drop either
+half and the test passes against the broken code. `sleep 60 &` from a shell inherits the
+shell's stdout, so `close` waits for it and the bug is invisible. Spawn it with
+`stdio: 'ignore'` and a `trap "" TERM`, and clean the pid up in a `finally` — a test for a
+process leak that leaks the process when it fails is not worth much.
+
 ## Asking whether a workspace exists: `volume ls`, never `volume inspect`
 
 `docker volume inspect` exits non-zero both when the workspace is absent and when the

@@ -441,6 +441,36 @@ describe('the deadline is the guarantee that an agent cannot be stuck', () => {
     expect(alive(pid)).toBe(false);
   });
 
+  it('leaves none running even where the command closed before they did', async () => {
+    // The case the previous test cannot reach. `close` says the process we started is gone
+    // and says nothing about what it started: this grandchild holds none of its parent's
+    // pipes, so `close` arrives while it is still there, and it ignores `SIGTERM`, so it is
+    // still there. Ending the escalation at `close` — the obvious place — strands it.
+    const child = `const { spawn } = require('node:child_process');
+       const g = spawn('sh', ['-c', 'trap "" TERM; while :; do sleep 0.05; done'], { stdio: 'ignore' });
+       process.stdout.write(String(g.pid));
+       setTimeout(() => {}, 60_000);`;
+    const result = await tool('exec', { deadline: 300, grace: 400 }).invoke(
+      { argv: ['node', '-e', child] },
+      NEVER,
+    );
+
+    const pid = Number(result.content.match(/stdout:\n(\d+)/)?.[1]);
+    expect(Number.isInteger(pid)).toBe(true);
+    try {
+      await settle();
+      expect(alive(pid)).toBe(false);
+    } finally {
+      // If it did survive, it survives this whole test run and the machine after it, since
+      // nothing else knows the pid. Clean up whatever the assertion found.
+      try {
+        process.kill(pid, 'SIGKILL');
+      } catch {
+        /* gone, which is the passing case */
+      }
+    }
+  });
+
   it('is not reachable from a call, and is the number the agent was told', () => {
     const exec = tool('exec');
     expect(Object.keys((exec.schema as { properties: object }).properties)).toEqual(['argv', 'stdin', 'cwd']);
@@ -485,6 +515,9 @@ describe('the guidance is where the agent will read it, and decides nothing', ()
   it('offers a charter template and applies none of it on the agent’s behalf', () => {
     expect(WORKSPACE_CHARTER).toMatch(/Check a command is there/);
     expect(WORKSPACE_CHARTER).toMatch(/interrupted/);
+    // The template is placeholders, not examples: the same property as the description
+    // above, and the easier one to lose, since an illustrative command reads as helpful.
+    expect(WORKSPACE_CHARTER).not.toMatch(/claude|codex|copilot|anthropic|openai/i);
     // Nothing reads it: an agent's charter is its record's, and a capability that prepended
     // its own paragraph would be an instruction no record could see and no parent narrow.
     const record = aRecord({ workspace, tools: ['fs', 'exec'] });
