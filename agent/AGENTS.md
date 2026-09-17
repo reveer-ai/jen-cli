@@ -368,6 +368,26 @@ entry to `SUPERVISED` or to `local()` means checking `entry.test.ts` for it. The
 shape, worth recognising elsewhere: a test whose premise is an absence goes quiet rather
 than red when the absence is filled.
 
+## A capability's description is source, and the structural tests read it as such
+
+`supervisor/policy.test.ts` holds the claim that a runtime never branches on where an agent
+sits, and it holds it the only way a claim about an absence can be held: by reading the
+runtime's own files and refusing to find `.parent`, `isRoot`, `depth` or `ancestor` in any
+of them. It strips comments before it looks. **It does not strip string literals**, and a
+capability's description is a string literal hundreds of bytes long written for a model.
+
+So `read`'s description, saying a transcript is readable at "any depth below you", failed a
+test about branching. Nothing was wrong with the code and nothing in the failure said so —
+it named `main.ts` and a regular expression about the tree.
+
+Say it in words the test does not look for; "a child, a child of that child, anything below
+you" is the same sentence to a model. Widening the strip to exclude string literals is the
+wrong repair: the words are exactly as load-bearing inside a template as outside one, and
+the test's whole value is that it cannot be talked out of a match.
+
+The same file's `RUNTIME` list is enumerated by hand, so **a new module under `runtime/`
+is not covered until it is added there** — `transcript.ts` was added with this change.
+
 ## Writing an output flood in a test program takes `writeSync`, not `process.stdout.write`
 
 A loop around `process.stdout.write` looks like the way to make a program that floods its

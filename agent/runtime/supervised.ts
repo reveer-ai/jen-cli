@@ -7,10 +7,11 @@
  * from ever *holding* the ability to spawn rather than only asking for it.
  *
  * **Nothing is registered here.** The registry is `main.ts`'s, which is where `spawn`,
- * `stop`, `send` and `await` are declared and where `read` will be. What this defines is how
- * one of them is built — and the shape held for five capabilities written against it after
- * the first two, rather than being settled by whichever of them was written first.
+ * `stop`, `send`, `await` and `read` are declared. What this defines is how one of them is
+ * built — and the shape held for five capabilities written against it after the first two,
+ * rather than being settled by whichever of them was written first.
  */
+import type { AgentRecord } from '../record.ts';
 import type { Capability, CapabilityResult } from './capability.ts';
 
 /**
@@ -22,6 +23,34 @@ import type { Capability, CapabilityResult } from './capability.ts';
  * decided what it dispatched.
  */
 export type Raise = (kind: string, input: unknown, residency: number) => Promise<CapabilityResult>;
+
+/**
+ * Raise a request of this declaration's own kind, and wait for its answer.
+ *
+ * {@link Raise} with the name and the residency already supplied, which is the whole of the
+ * difference: a declaration composing its own invocation still must not be the place its own
+ * name is spelled a second time, and it has no business naming another capability's kind.
+ */
+export type Ask = (input: unknown) => Promise<CapabilityResult>;
+
+/** What a declaration that composes local work with its requests is handed. */
+export interface Composing {
+  /** What the model supplied, exactly as it wrote it and checked against nothing. */
+  input: unknown;
+  /** The request channel, bound to this declaration's kind. Callable more than once. */
+  ask: Ask;
+  /**
+   * The agent's own record.
+   *
+   * Here because work done *in place* happens somewhere, and the only honest answer to
+   * where is this agent's own workspace — the same reason `workspace.ts`'s `local()` takes
+   * one. Every declaration is handed it whether it composes or not, which keeps this from
+   * being a parameter that says which capability is special.
+   */
+  record: AgentRecord;
+  /** How an invocation is told to stop. See {@link Capability.invoke}. */
+  signal: AbortSignal;
+}
 
 export interface SupervisedCapability {
   name: string;
@@ -42,16 +71,47 @@ export interface SupervisedCapability {
    * returning something `../protocol.ts`'s `count()` refuses makes the *request frame*
    * unreadable at the supervisor, so there is no request and no answer, and the agent is
    * left on a call that never returns — strictly worse than the residency being wrong.
+   *
+   * It reads whatever is about to be raised, which for a composing declaration is that
+   * declaration's own wire input rather than the model's. The two are the same input
+   * everywhere else, and a capability that both suspends its body and pages the supervisor
+   * does not exist; when one does, this is where the difference will need saying.
    */
   residency?(input: unknown): number;
+  /**
+   * The whole of the invocation, where raising once and returning the answer is not it.
+   *
+   * A declaration with one of these may look at an answer before the loop does, may raise
+   * again off the back of it, and may do work in the agent's own sandbox in between —
+   * `read` fetches a transcript in pages and writes it to the workspace, and is the only
+   * one today. **Nothing about it reaches outside this function.** `dispatch` invokes it by
+   * the same call it makes for every other capability, the loop records the result the same
+   * way, and the protocol carries the same request frames; where an invocation's own body
+   * does its work is not a thing any of the three can observe.
+   *
+   * Which is why the hook is here rather than a third kind beside {@link supervised} and
+   * `local()`: the substrate's two disjoint kinds were a fact about the capabilities that
+   * existed, not a constraint the runtime imposes, and the rule that actually matters is
+   * that no capability has a path of its own through the loop, the dispatcher or the
+   * protocol. This one does not.
+   *
+   * **A failure is this invocation's result, never a throw.** `dispatch` would convert one
+   * anyway; returning it is what lets the message name what the capability was doing.
+   */
+  compose?(context: Composing): Promise<CapabilityResult>;
 }
 
 /** Turn a supervisor-backed request into something `dispatch` cannot distinguish. */
-export function supervised(declaration: SupervisedCapability, raise: Raise): Capability {
+export function supervised(declaration: SupervisedCapability, raise: Raise, record: AgentRecord): Capability {
+  const ask: Ask = (input) => raise(declaration.name, input, declaration.residency?.(input) ?? 0);
   return {
     name: declaration.name,
     description: declaration.description,
     schema: declaration.schema,
-    invoke: (input) => raise(declaration.name, input, declaration.residency?.(input) ?? 0),
+    // The default is the composition of one raise and nothing else, spelled as the absence
+    // of a hook rather than as a hook every declaration has to supply — so a declaration
+    // written before this existed behaves exactly as it did.
+    invoke: (input, signal) =>
+      declaration.compose === undefined ? ask(input) : declaration.compose({ input, ask, record, signal }),
   };
 }

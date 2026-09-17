@@ -26,6 +26,7 @@ import { readBootFrame } from './boot.ts';
 import { Runtime } from './index.ts';
 import { openAIClient } from './model.ts';
 import { supervised } from './supervised.ts';
+import { transcribe } from './transcript.ts';
 import { local } from './workspace.ts';
 import { encode, lines, parseToAgent, type FromAgent } from '../protocol.ts';
 
@@ -43,10 +44,15 @@ import type { Raise, SupervisedCapability } from './supervised.ts';
  * **Declarations and nothing else.** Each entry is a name, a description the model reads,
  * and a JSON Schema for its input; `supervised()` turns it into something `dispatch` cannot
  * tell from work done inside the sandbox. There is no `spawn` branch in the loop, in the
- * dispatcher or in the protocol, and adding `read` is one more entry here and nothing else
- * in this file — which is what keeps a runtime at depth four byte-identical to the one
- * nobody spawned. `send` and `await` were added exactly that way, and the diff that added
- * them touched no other file under `runtime/`.
+ * dispatcher or in the protocol — which is what keeps a runtime at depth four byte-identical
+ * to the one nobody spawned. `send` and `await` were added as one entry here and nothing
+ * else, and the diff that added them touched no other file under `runtime/`.
+ *
+ * **`read` is one entry here too, and it is the one that does something in place.** Its
+ * `compose` fetches the transcript it asked for and writes it into this agent's workspace
+ * before answering with the path — see `transcript.ts` for why the runtime is what writes
+ * it. The loop, the dispatcher and the protocol still cannot tell it from `spawn`; what a
+ * capability's own body does is not a thing any of the three can observe.
  *
  * **Registering is not granting.** `resolveCapabilities` builds an agent's registry from
  * its *record*, so an agent whose record does not name `spawn` is never offered it, and an
@@ -106,6 +112,11 @@ const SUPERVISED: SupervisedCapability[] = [
             'than silencing it: one you do not grant `send` still reports to you when its ' +
             'turn ends, because reporting at a turn boundary is not a capability and cannot ' +
             'be withheld — what it loses is the ability to speak in the middle of its work. ' +
+            'One capability depends on another to be worth anything: `read` answers with a ' +
+            'path to a file in the child\'s own workspace rather than with the transcript, ' +
+            'so a child granted `read` and no `fs` or `exec` is handed a location it has no ' +
+            'way to open. Grant it a means of reading a file alongside `read`, or grant ' +
+            'neither. ' +
             'And if what you want is a child that answers once and stops, write that in its ' +
             'charter: a grant says what a child may reach, not what shape its conversation ' +
             'with you should take.',
@@ -216,6 +227,38 @@ const SUPERVISED: SupervisedCapability[] = [
       return typeof keep === 'number' && Number.isFinite(keep) && keep >= 0 ? keep : 0;
     },
   },
+  {
+    name: 'read',
+    description:
+      'Read the transcript of an agent below you: every message, every tool call, every ' +
+      'result, and the reasoning the provider returned — what that agent actually did, ' +
+      'rather than what it told you it did. A child that never ran the tests can still ' +
+      'report that they passed, and this is how you check. Only your own descendants are ' +
+      'readable — a child, a child of that child, anything below you — and never a sibling, ' +
+      'never the agent that spawned you, never yourself. ' +
+      'It does not return the transcript. It writes it into your workspace and answers with ' +
+      'the path, because a transcript in a result would be re-sent to the model on every ' +
+      'step you take afterwards, for the rest of your life, however long the transcript was. ' +
+      'The file is JSONL — one JSON event per line, oldest first — so ask it the question ' +
+      'you actually have: `grep` for a command you were told was run, `tail` for how the ' +
+      'work ended, `jq` to pick the tool calls out. **You need `fs` or `exec` to open it**; ' +
+      'without one of them this answers with a path you cannot read. ' +
+      'It is a snapshot taken when you call, so an agent still working has moved on since; ' +
+      'call again to refresh it, which replaces the file rather than adding another.',
+    schema: {
+      type: 'object',
+      properties: {
+        id: {
+          type: 'string',
+          minLength: 1,
+          description: 'The agent whose transcript to read, by the id `spawn` returned for it.',
+        },
+      },
+      required: ['id'],
+      additionalProperties: false,
+    },
+    compose: transcribe,
+  },
 ];
 
 /** One frame out, as one line. Every write in this file goes through here. */
@@ -252,7 +295,7 @@ try {
     // exactly as it did when there was only one source, so an agent granted neither `fs`
     // nor `exec` is offered neither and nothing else about it differs.
     capabilities: [
-      ...SUPERVISED.map((declaration) => supervised(declaration, raise)),
+      ...SUPERVISED.map((declaration) => supervised(declaration, raise, frame.record)),
       ...local(frame.record),
     ],
     client: openAIClient(frame.record),
