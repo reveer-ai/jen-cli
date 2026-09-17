@@ -39,7 +39,7 @@ import type { Composing } from './supervised.ts';
  * reserved path an agent must be *prevented* from using is a rule needing enforcement in
  * `fs`, and that is a cost out of all proportion to the collision.
  */
-export const TRANSCRIPTS = '.transcripts';
+const TRANSCRIPTS = '.transcripts';
 
 /**
  * How many events one request asks for.
@@ -49,7 +49,7 @@ export const TRANSCRIPTS = '.transcripts';
  * costs one page. It is deliberately well above a short child's whole log, so the ordinary
  * read is a single exchange and the paging is what happens to the sessions worth inspecting.
  */
-export const PAGE = 512;
+const PAGE = 512;
 
 /** What the supervisor answers a `read` with. See `supervisor/index.ts`'s `#reading`. */
 interface Served {
@@ -90,27 +90,45 @@ export async function transcribe({ input, ask, record }: Composing): Promise<Cap
 
   let handle: FileHandle | undefined;
   let written = 0;
+  // The length of the snapshot, fixed by the first answer and never raised by a later one.
+  // A transcript grows while it is being read, so a loop that re-read this from every answer
+  // would end when a working child fell behind the pipe rather than when the log ran out —
+  // no bound at all, for exactly the busy child worth reading. Fixing it here is what makes
+  // the file the events that were there when the call was made, which is what the result
+  // tells the model it is and what `design.md` puts tailing under Non-Goals to keep it.
+  let total: number | undefined;
   try {
     for (;;) {
-      const answer = await ask({ id: target, from: written, count: PAGE });
+      // Never ask past the snapshot: the last page is the remainder of it, so a log that grew
+      // in the meantime cannot arrive on the end of the final page.
+      const count = total === undefined ? PAGE : Math.min(PAGE, total - written);
+      const answer = await ask({ id: target, from: written, count });
       // Unchanged, because the supervisor's refusals say what a model needs to hear and
       // rewording one here would put this file in the business of explaining the tree.
       if (!answer.ok) return answer;
 
       const page = served(answer.content);
+      total ??= page.total;
       handle ??= await opened(directory, temporary);
       if (page.events.length > 0) {
         // One line per event, serialized from what was stored and not from a shape of this
         // file's own: a reasoning event's `opaque` payload rides along with everything else,
         // because deciding on the way past that a field was "only for replay" is exactly the
         // interpreting a verification surface may not do.
-        await handle.write(page.events.map((event) => `${JSON.stringify(event)}\n`).join(''));
+        //
+        // `writeFile` on the handle and not `write`: `write` issues one `write(2)` and reports
+        // what it managed in a count, and a full volume returns short rather than `ENOSPC`
+        // while there is some room left — so the rename would publish a truncated transcript
+        // under a complete one's name, which is the outcome the rename exists to prevent. This
+        // loops until the page is out and continues from the handle's own position, so a
+        // per-page write stays one. `supervisor/store.ts`'s `save()` writes its temporary the
+        // same way.
+        await handle.writeFile(page.events.map((event) => `${JSON.stringify(event)}\n`).join(''));
         written += page.events.length;
       }
-      // An empty page ends it whatever the total says. The transcript can grow while it is
-      // being read, so `written >= total` is a floor rather than a promise, and a supervisor
-      // answering nothing is the only thing that could make this loop forever.
-      if (page.events.length === 0 || written >= page.total) break;
+      // An empty page ends it whatever the total says — a `total` that cannot be reached is
+      // the one thing the count above cannot bound.
+      if (page.events.length === 0 || written >= total) break;
     }
 
     await handle!.close();

@@ -1208,4 +1208,39 @@ describe('a capability that raises and then works where it stands', () => {
     expect(await readdir(workspace)).toEqual([]);
     await peer.stop();
   });
+
+  /**
+   * A snapshot, not a tail. `supervisor/index.ts`'s `#reading` computes `total` after it has
+   * sliced, so a child appending while its parent reads raises the bound the page it just
+   * served failed to reach. A loop that took `total` from every answer would therefore end
+   * when the child fell behind a sub-millisecond pipe rather than when the log ran out — no
+   * bound at all, for exactly the busy child worth reading. This child never falls behind.
+   */
+  it('reads the transcript as it stood at the call, and does not follow a child still writing', async () => {
+    const transcript = Array.from({ length: 600 }, (_, at) => aMessage(`stored-${at}`));
+    const serve = serving(transcript);
+    let later = 0;
+    const asked = answering((input) => {
+      const answer = serve(input);
+      // The child works on, a page's worth per round trip, for as long as anything asks.
+      for (let n = 0; n < 512; n += 1, later += 1) transcript.push(aMessage(`later-${later}`));
+      return answer;
+    });
+    replies = [reads('a-1'), ORDINARY];
+    current = start({ tools: ['read'], workspace });
+    const peer = current;
+    await peer.tell('Check the child.');
+
+    const written = await readFile(join(workspace, '.transcripts', 'a-1.jsonl'), 'utf8');
+    expect(written.trimEnd().split('\n')).toHaveLength(600);
+    // Not one event that was appended after the call, which is what the result promises the
+    // model when it says the file is what was stored at the moment it asked.
+    expect(written).not.toContain('later-');
+
+    // Two requests for 600 events at 512 a page, the second asking for the remainder of the
+    // snapshot rather than for a whole page whose tail would be the child's later work.
+    expect(asked).toHaveLength(2);
+    expect(asked[1]).toMatchObject({ from: 512, count: 88 });
+    await peer.stop();
+  });
 });

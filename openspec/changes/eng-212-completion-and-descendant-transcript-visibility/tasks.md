@@ -26,6 +26,7 @@
 - [x] 4.6 A failed write returns a failed result naming the reason, the agent continues, and the transcript is still readable afterwards.
 - [x] 4.7 A read of a non-descendant reaches the model as a normal failed result and the turn continues.
 - [x] 4.8 A composing capability is dispatched by the same path as every other, with nothing in the loop, dispatcher or protocol distinguishing it.
+- [x] 4.9 A read of a child that is still appending stops at the transcript as it stood at the call, and does not follow the log it is being handed.
 
 ## 5. Checks and notes
 
