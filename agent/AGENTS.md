@@ -399,6 +399,28 @@ nothing is ever flushed and the reader sees nothing while the writer grows witho
 does, and is what lets the reader on the other end — `exec`'s output cap — be the thing that
 stops it. `assistant-stub.ts --flood` is written that way for exactly this reason.
 
+## A `FileHandle`'s `write` can come up short, and nothing makes you look
+
+`handle.write(data)` issues one `write(2)`. It does not loop. What it managed is reported in
+the resolved object's `bytesWritten`, and the call resolves rather than throwing when that is
+less than what it was handed — so a caller advancing its own counter by the length of the
+data, which is the obvious way to write it, records bytes that never landed and gets no
+signal at all.
+
+The realistic road to a short write here is **a full volume**: a regular-file write returns
+short rather than `ENOSPC` when there is some room left and not enough, which is precisely
+the state a workspace reaches first. It is worst where the file is then published as complete
+— `runtime/transcript.ts` writes pages to a temporary and renames it over the target, and a
+short write turns that from a guard into the thing that publishes a truncated file under a
+whole one's name, atomically and undetectably.
+
+`handle.writeFile(data)` loops until every byte is out, and when called repeatedly on the
+same handle it continues from that handle's current position, so a per-page write stays a
+per-page write. Use it for anything whose completeness is load-bearing. `supervisor/store.ts`'s
+`save()` and `runtime/transcript.ts` both do. `handle.write` is fine where a short write is
+survivable — `store.ts`'s per-event append is one line to an open log, re-derivable if it
+tears — but "survivable" is a decision to make rather than a default to inherit.
+
 ## The substrate's manifest, and the entry point that needs no build
 
 `agent/package.json` exists because the runtime has a dependency and the repository's
