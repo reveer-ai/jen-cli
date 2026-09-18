@@ -10,10 +10,11 @@ Run its tests with the rest of the substrate's — see [`../AGENTS.md`](../AGENT
 them need nothing but node. `containers.test.ts` is the exception and needs a running
 container runtime, the same as `sandbox/docker.test.ts` and for the same reason.
 
-### Three things `containers.test.ts` will catch you on
+### Four things `containers.test.ts` will catch you on
 
-All three cost a debugging session the first time this tier was run for real, and none of
-them announces itself — each one produces a tree that looks like it is working.
+The first three cost a debugging session the first time this tier was run for real and the
+fourth cost a false alarm later, and none of them announces itself — each one produces a
+tree that looks like it is working, or a change that looks like it is broken.
 
 - **`add(record)` with no opening message boots nothing.** The agent is created already
   `waiting` with an empty mailbox, which is a perfectly good state and never becomes a
@@ -31,6 +32,15 @@ them announces itself — each one produces a tree that looks like it is working
   new turn — so the parent settles and is immediately woken again by its own child. Waiting
   for every agent to be `waiting` together waits for something that does not happen. Wait on
   the transcript instead: the event the agent appended is what "it continued" actually means.
+- **The transcript says an agent was woken, never what it was told.** The bullet above sends
+  you to the transcript, and for "it continued" that is right — but `SHELL_PEER` answers a
+  message with a fixed `charter` and `usage` event and never echoes the content it received,
+  so two different messages are indistinguishable there and a delivered report is not in it
+  at all. Asserting a particular message arrived — its wording, its recipient, that it
+  arrived once — means reading `store.agent(id).mailbox`, and reading it *while it is there*:
+  delivery drains the mailbox, so poll for it with `until` rather than looking afterward.
+  Searching a transcript for the wording finds nothing and reads as a message that was never
+  sent, which is the wrong bug to go looking for.
 
 ## The collision the whole design is built around
 
