@@ -409,6 +409,101 @@ describe('a message handed to a body that never recorded it is not lost with the
    * child again on the supervisor's own initiative — retrying a body that just failed, which
    * is the judgment `#ended` already declines to make.
    */
+  /**
+   * The restore's third caller, which is the ordinary one.
+   *
+   * `#suspend` is reached from a shutdown, from a dismissal, and from a residency expiry, and
+   * only the last of those wants what it put back delivered — the other two are ending the
+   * run or the agent. So a message restored at an ordinary suspension would sit in the
+   * mailbox of a `waiting` agent with no body, which nothing else in the supervisor looks
+   * for: delivery only happens in a settle, and `stalled` reads held mail as a tree still
+   * moving, so `onStalled` would not fire for it either. Silence with an instruction in it,
+   * reached through the fix for silence with an instruction in it.
+   *
+   * **The window is a timer firing while a message is on its way**, which is why the queue is
+   * held open here rather than raced for: the child's suspension blocks on `beforeDestroy`,
+   * the `tell` queues behind it, and the root's residency expires while both wait.
+   */
+  it('delivers what it put back when an ordinary residency ended the body', async () => {
+    const run = await aRun();
+    runs.push(run);
+    await run.supervisor.add(aRecord({ id: 'a', parent: null, tools: ['spawn', 'await'] }), 'Begin.');
+    const root = run.driver.latest('a')!;
+    await root.until(() => root.messages().length === 1, 'its opening message');
+
+    root.ask('a:1', 'spawn', { name: 'scout', charter: 'Look around.', opening: 'Begin.', tools: ['await'] });
+    await root.until(() => root.answers().has('a:1'), 'the spawn being answered');
+    const child = run.driver.latest('a-1')!;
+    await child.until(() => child.messages().length === 1, "the child's opening message");
+
+    // The child suspends on a call rather than by speaking, because a child that spoke would
+    // post to this root and take the residency down with the delivery.
+    let holding: () => void;
+    const held = new Promise<void>((wake) => {
+      holding = wake;
+    });
+    let release: () => void;
+    const released = new Promise<void>((wake) => {
+      release = wake;
+    });
+    run.driver.beforeDestroy = async (agent) => {
+      if (agent !== 'a-1') return;
+      holding();
+      await released;
+    };
+
+    // Resident, at a boundary, with its own number armed.
+    root.answered('Done.', 200);
+    await until(() => run.store.agent('a').state.status === 'waiting', 'the turn ending');
+
+    child.ask('a-1:1', 'await', {}, 0);
+    await held;
+
+    const told = run.supervisor.tell('One more thing.');
+    // Long enough that the residency above expires while the queue is held, which is the
+    // ordering the bug needs: the delivery ahead of the expiry, and the expiry already
+    // queued by the time the delivery hands the message over.
+    await new Promise<void>((wake) => setTimeout(wake, 400));
+    release!();
+    await told;
+
+    await until(() => run.driver.all('a').length === 2, 'the root being woken in a fresh body');
+    expect(run.driver.all('a').at(-1)!.messages()).toEqual(['[from the human] One more thing.']);
+    expect(run.store.agent('a').mailbox).toEqual([]);
+  });
+
+  /**
+   * The restore is the only call in `#suspend` that can fail, and `#shutdown` walks every
+   * body in a bare loop — so a rejection here would keep the containers of every body after
+   * this one and skip `store.close()`, failing a clean exit through the action a person takes
+   * to stop for the day. A disk that filled while the run worked is the ordinary way here,
+   * and it is when you most want the rest ended.
+   */
+  it('ends every other body when the mailbox cannot be written back', async () => {
+    const run = await aRun();
+    runs.push(run);
+    await run.supervisor.add(aRecord({ id: 'a', parent: null, tools: ['spawn'] }), 'Begin.');
+    const root = run.driver.latest('a')!;
+    await root.until(() => root.messages().length === 1, 'its opening message');
+
+    root.ask('a:1', 'spawn', { name: 'scout', charter: 'Look around.', opening: 'Begin.' });
+    await root.until(() => root.answers().has('a:1'), 'the spawn being answered');
+    const child = run.driver.latest('a-1')!;
+    await child.until(() => child.messages().length === 1, "the child's opening message");
+
+    // Neither has acknowledged its opening, so both are holding one, and the root is the
+    // first body the shutdown reaches.
+    run.store.save = () => Promise.reject(new Error('no space left on device'));
+
+    await run.supervisor.shutdown();
+
+    expect(root.destroyed).toBe(true);
+    expect(child.destroyed).toBe(true);
+    // Reported rather than swallowed: this is the supervisor's own trouble, and `onFailure`
+    // is the only thing that can tell a person a message was lost.
+    expect(run.failures.map((failure) => failure.agent)).toEqual(['a', 'a-1']);
+  });
+
   it('does not put it back when the body died rather than being ended', async () => {
     const { run, peer } = await atABoundary();
     await run.supervisor.tell('One more thing.');

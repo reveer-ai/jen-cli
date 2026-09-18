@@ -118,6 +118,8 @@ When the person ends the entry point, it SHALL end the run's sandboxes and SHALL
 
 Ending is not discarding. A run is ended for every reason including the ordinary one, and its agents' work is sitting in their workspaces waiting to be resumed from; a shutdown that took workspaces with it would destroy that work through the action a person takes to stop for the day. Releasing a workspace is irreversible and no part of the substrate does it.
 
+It SHALL do so from the moment the run begins to be provisioned rather than only once the run is under way. Starting boots the root and resuming boots a body for every agent that was working, all of it before a person can address anything — and a start that is taking longer than expected is exactly when a person interrupts. The sandboxes created by then are already the run's, and an interrupt that is not yet listened for leaves every one of them running.
+
 The consequence SHALL be recorded rather than left to be discovered: a run's workspaces outlive the run, and removing them is the person's own act.
 
 #### Scenario: Shutting down leaves the work
@@ -125,6 +127,11 @@ The consequence SHALL be recorded rather than left to be discovered: a run's wor
 - **WHEN** the person ends the entry point
 - **THEN** no sandbox of the run is still running
 - **AND** every workspace still exists with its contents
+
+#### Scenario: The person interrupts while the run is still starting
+
+- **WHEN** the person interrupts the entry point before its agents have all been provisioned
+- **THEN** no sandbox the run had created by then is still running
 
 #### Scenario: The run can be taken up again afterwards
 

@@ -195,11 +195,20 @@ beforeAll(async () => {
 
   // Built rather than pulled: the image is this change's, it is pushed to no registry, and
   // building it from the working tree is what makes the thing under test the thing on disk.
-  const built = await run('docker', ['build', '--tag', IMAGE, import.meta.dirname], { timeout: 900_000 }).catch(
-    (error: unknown) => error as { stderr?: string },
-  );
-  if ('stderr' in built && typeof built.stderr === 'string' && !(await imageExists())) {
-    throw new Error(`the agent image could not be built from ${import.meta.dirname}:\n${built.stderr}`);
+  //
+  // **Whether it built is read from the build and from nothing else.** The tag it writes is
+  // left on the machine by every green run and nothing removes it, so a guard that asked
+  // whether `jen/agent:latest` resolves would answer yes for a Dockerfile that just failed
+  // to build — and the whole tier would run green against yesterday's image, saying nothing
+  // about the tree it was pointed at. `run` rejects on a non-zero exit, which is the answer
+  // already.
+  try {
+    await run('docker', ['build', '--tag', IMAGE, import.meta.dirname], { timeout: 900_000 });
+  } catch (error) {
+    throw new Error(
+      `the agent image could not be built from ${import.meta.dirname}:\n` +
+        `${(error as { stderr?: string }).stderr ?? String(error)}`,
+    );
   }
 
   // **The host has to be reachable from inside a container, and that is checked here
@@ -229,10 +238,6 @@ beforeAll(async () => {
     );
   }
 }, 900_000);
-
-async function imageExists(): Promise<boolean> {
-  return (await ask('image', 'inspect', IMAGE, '--format', '{{.Id}}')) !== '';
-}
 
 afterEach(async () => {
   for (const gateway of gateways.splice(0)) await gateway.close();

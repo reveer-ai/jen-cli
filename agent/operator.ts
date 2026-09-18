@@ -91,6 +91,39 @@ const supervisor = new Supervisor({
 });
 
 /**
+ * Ending ends bodies and keeps every workspace.
+ *
+ * Reached from four directions — the person's input ending, an interrupt, a termination, and
+ * the fall-through at the end — and each of them is the ordinary way to stop for the day
+ * rather than a way to discard the run. Guarded because two of them can arrive together: a
+ * terminal sends `SIGINT` and the input ends behind it, and two shutdowns would race the
+ * store closed underneath the first.
+ *
+ * **Registered before anything is provisioned**, which is the part worth stating. Starting a
+ * run boots the root, and resuming one boots a body per `working` agent — a tree of ten is
+ * ten `docker create`s, an image resolution on a cold machine, and all of it awaited. A
+ * `SIGINT` arriving in that window with no handler yet gets Node's default: the process dies
+ * at once, with however many containers it had already created still running and the store
+ * never closed. Ctrl-C while a start is taking longer than expected is not an exotic case;
+ * it is the same slowness that widens the window. Arriving this early costs nothing, because
+ * `shutdown()` over no bodies is a store close.
+ */
+let stopping: Promise<void> | undefined;
+const stop = (): Promise<void> => {
+  stopping ??= supervisor
+    .shutdown()
+    .catch((error: unknown) => process.stderr.write(`[substrate] shutting down: ${said(error)}\n`))
+    .then(() => {});
+  return stopping;
+};
+
+for (const signal of ['SIGINT', 'SIGTERM'] as const) {
+  process.on(signal, () => {
+    void stop().then(() => process.exit(0));
+  });
+}
+
+/**
  * Begin or resume, decided from the store and from nothing the person said.
  *
  * `Store.open` creates the run's directory whether or not it was there, so the question is
@@ -113,29 +146,6 @@ if (store.root === null) {
   // Anything the person wants to say now is typed, and reaches the root by the ordinary
   // path.
   await supervisor.resume();
-}
-
-/**
- * Ending ends bodies and keeps every workspace.
- *
- * Reached from three directions — the person's input ending, an interrupt, a termination —
- * and each of them is the ordinary way to stop for the day rather than a way to discard the
- * run. Guarded because two of them can arrive together: a terminal sends `SIGINT` and the
- * input ends behind it, and two shutdowns would race the store closed underneath the first.
- */
-let stopping: Promise<void> | undefined;
-const stop = (): Promise<void> => {
-  stopping ??= supervisor
-    .shutdown()
-    .catch((error: unknown) => process.stderr.write(`[substrate] shutting down: ${said(error)}\n`))
-    .then(() => {});
-  return stopping;
-};
-
-for (const signal of ['SIGINT', 'SIGTERM'] as const) {
-  process.on(signal, () => {
-    void stop().then(() => process.exit(0));
-  });
 }
 
 /**

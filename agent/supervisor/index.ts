@@ -650,19 +650,32 @@ export class Supervisor {
     // was taken out of, which is exactly the state `#deliver` read: `waiting` on nothing,
     // because a message that begins a turn is one no request was outstanding for.
     //
-    // **Nothing is settled from here.** The two callers that reach a live body are a
-    // shutdown, where delivering again is the opposite of what was asked for, and a
-    // dismissal, whose agent is not `waiting` and is skipped. The message waits in the
-    // mailbox for whoever takes the run up next, which is what `resume()` ends by doing.
+    // **Nothing is settled from here, and the decision belongs to the caller.** There are
+    // three. A shutdown is closing every body, and delivering again would be the opposite of
+    // what was asked for. A dismissal's agent is not `waiting` and is skipped by the guard
+    // below. An ordinary residency expiry is the one that wants delivery, and {@link
+    // #retire} is where it asks for it — a restored message sitting in the mailbox of a
+    // `waiting` agent with no body is work nothing else notices, because `stalled` reads
+    // held mail as a tree still moving.
     const handed = body.handed;
     if (handed === undefined) return;
     const agent = this.#store.agent(id);
     if (agent.state.status !== 'working') return;
-    await this.#store.save(id, {
-      ...agent,
-      state: { status: 'waiting', request: null },
-      mailbox: [handed, ...agent.mailbox],
-    });
+    await this.#store
+      .save(id, {
+        ...agent,
+        state: { status: 'waiting', request: null },
+        mailbox: [handed, ...agent.mailbox],
+      })
+      // **Never allowed out of here**, because `#shutdown` walks every body in a bare loop:
+      // a rejection would take that loop with it, leaving every body after this one holding
+      // its container and skipping `store.close()` — a clean exit failed through the very
+      // action a person takes to stop for the day. A disk that filled while the run worked
+      // is the ordinary way to arrive here, and it is exactly when you most want the rest
+      // ended. Reported rather than swallowed like the two calls above it: a message that
+      // could not be written back is lost the way it was lost before any of this existed,
+      // and that is the supervisor's own trouble rather than something an agent can act on.
+      .catch((error: unknown) => this.#failed(id, error));
   }
 
   /**
@@ -679,10 +692,32 @@ export class Supervisor {
     const body = this.#bodies.get(id);
     if (body === undefined) return;
     if (keep <= 0) {
-      void this.#serial(() => this.#suspend(id));
+      this.#retire(id);
       return;
     }
-    body.timer = setTimeout(() => void this.#serial(() => this.#suspend(id)), keep);
+    body.timer = setTimeout(() => this.#retire(id), keep);
+  }
+
+  /**
+   * The ordinary suspension, and the only one that delivers afterwards.
+   *
+   * {@link #suspend} puts back whatever the body never acknowledged and decides nothing
+   * about it, because its other two callers want nothing done: a shutdown is ending the run
+   * and a dismissal's agent is gone. A residency expiry is neither, and what it can leave
+   * behind is an agent `waiting` with a message at the head of its mailbox and no body to
+   * take it. Nothing else would find that: delivery only happens in a settle, and `stalled`
+   * counts held mail as a tree still moving, so `onStalled` would not fire either. The
+   * window is a timer firing as a `tell` arrives — which is what a busy tree does.
+   *
+   * Nobody holds this promise, so a store that cannot be written leaves through
+   * {@link #failed} rather than as an unhandled rejection ending the process every agent in
+   * the run is living in.
+   */
+  #retire(id: string): void {
+    void this.#serial(async () => {
+      await this.#suspend(id);
+      await this.#settle();
+    }).catch((error: unknown) => this.#failed(id, error));
   }
 
   #disarm(id: string): void {

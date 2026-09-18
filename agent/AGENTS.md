@@ -776,6 +776,17 @@ docker volume ls --filter label=jen.agent=<agent id> --format '{{.Name}}'
 `acceptance.test.ts` removes its own in `afterAll` for exactly this reason. If you run the
 operator by hand, that is on you.
 
+### A failed image build is invisible unless the build itself is asked
+
+`jen/agent:latest` is left on the machine by every green run of `acceptance.test.ts`, and
+nothing anywhere removes it — so **whether the tag resolves says nothing about whether the
+Dockerfile in the working tree builds.** A setup that asked `docker image inspect` after a
+failed build would find yesterday's image and run all five tests green against it: green, and
+about nothing on disk. The build's own exit is the answer, and it is the only one. `run()`
+rejects on a non-zero exit, so the build is wrapped in a `try` and the error's `stderr` is
+what the failure carries. Nothing else in the repository ever builds this image, so this tier
+is the only thing that would ever notice.
+
 ### A container reaches the host at `host.docker.internal`, on Docker Desktop only
 
 `acceptance.test.ts` stands a scripted model up on the host and points each record's

@@ -85,7 +85,8 @@ Both are asserted in the tier against the real runtime, so this is only worth do
 them happen with a model that is really thinking.
 
 - **Resume.** While a child is mid-turn, `kill -9` the operator's process group
-  (`kill -9 -$(pgrep -f 'operator.ts ~/.jen live-1')`). Start the operator again with the
+  (`kill -9 -$(pgrep -f 'operator.ts .*live-1')`; the pattern cannot carry the `~`, because
+  the shell expanded it in the operator's argv and these quotes would preserve it here). Start the operator again with the
   **same command line** — nothing on it says begin or resume. The tree comes back from the
   store, the swept containers are replaced, and the work finishes. The model is not told;
   compare `~/.jen/runs/live-1/agents/<id>/events.ndjson` before and after and the earlier
