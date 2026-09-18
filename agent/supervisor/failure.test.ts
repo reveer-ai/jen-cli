@@ -12,9 +12,13 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { aRecord } from '../fixture.ts';
 import { INTERRUPTED } from '../runtime/events.ts';
 import { aRun, TestDriver, until, untilStored, type Run } from './double.ts';
+import { SandboxError } from '../sandbox/index.ts';
+import { StoreError } from './store.ts';
 import { SUBSTRATE } from './index.ts';
 
 import type { Event } from '../runtime/events.ts';
+import type { Sandbox, SandboxRequest } from '../sandbox/index.ts';
+import type { Message } from './store.ts';
 
 const runs: Run[] = [];
 
@@ -31,6 +35,25 @@ async function aPair(): Promise<Run> {
   await run.supervisor.add(aRecord({ id: 'a', parent: null, tools: ['await'] }), 'Begin.');
   await run.supervisor.add(aRecord({ id: 'a-1', parent: 'a', tools: ['await'] }), 'Look at the tree.');
   return run;
+}
+
+/** A driver that cannot provision the agents named, and provisions every other one. */
+function withoutBodiesFor(driver: TestDriver, ...bodiless: string[]): () => void {
+  const create = driver.create.bind(driver);
+  driver.create = async (request: SandboxRequest): Promise<Sandbox> => {
+    if (bodiless.includes(request.id)) throw new SandboxError('no daemon');
+    return create(request);
+  };
+  // Handing the original back is what lets a test show an outage ending, which is half of
+  // what "reported once per outage" means.
+  return () => {
+    driver.create = create;
+  };
+}
+
+/** What the substrate has told this agent, as distinct from what its children have said. */
+function reportsTo(run: Run, id: string): Message[] {
+  return run.store.agent(id).mailbox.filter((message) => message.substrate === true);
 }
 
 describe('an agent that ends without speaking is reported to its parent', () => {
@@ -147,6 +170,47 @@ describe('a supervisor restarting over a store sweeps and resumes rather than mo
     expect(second.store.agent('a').mailbox).toEqual([]);
   });
 
+  /**
+   * `#resume`'s boot loop had the same bare shape as the settling loop, so one agent that
+   * could not be provisioned aborted the rescue of every agent after it in `ids()`.
+   *
+   * It cannot borrow settling's retry: a `working` agent has nothing queued, so no later
+   * settle has anything to try for it. What it gets instead is its stored state left exactly
+   * as it was, which makes `resume()` idempotent over it — fix the daemon, call it again.
+   */
+  it('recovers past an agent it cannot boot, reports it, and boots it on the next run', async () => {
+    const first = await aPair();
+    const parent = first.driver.latest('a')!;
+    await parent.until(() => parent.messages().length > 0);
+    parent.append({ type: 'charter', at: AT, content: aRecord().charter });
+    await untilStored(async () => (await first.store.length('a')) === 1, 'the log being stored');
+
+    const before = first.store.agent('a-1');
+    expect(before.state).toEqual({ status: 'working' });
+    await first.store.close();
+
+    const driver = new TestDriver();
+    const heal = withoutBodiesFor(driver, 'a-1');
+    const second = await aRun({ directory: first.directory, driver });
+    runs.push(second);
+    await second.supervisor.resume();
+
+    // The agent ordered after the failing one was recovered as though nothing happened.
+    expect(driver.all('a')).toHaveLength(1);
+    expect(driver.all('a-1')).toEqual([]);
+    // Its parent was told, by the same path any other agent without a body is reported on.
+    expect(reportsTo(second, 'a')).toMatchObject([{ from: 'a-1', substrate: true }]);
+    expect(reportsTo(second, 'a')[0]?.content).toContain('a-1 could not be given a body');
+    // Left exactly as stored, so there is something for a second attempt to boot.
+    expect(second.store.agent('a-1')).toEqual(before);
+
+    heal();
+    await second.supervisor.resume();
+    expect(driver.all('a-1')).toHaveLength(1);
+    // Continued from its own transcript rather than restarted on an empty one.
+    expect((JSON.parse(driver.latest('a-1')!.boot) as { owed: boolean }).owed).toBe(true);
+  });
+
   it('leaves every workspace alone while it sweeps', async () => {
     const first = await aPair();
     first.driver.workspace('a').set('notes.md', 'a day of work');
@@ -232,19 +296,17 @@ describe('a supervisor restarting over a store sweeps and resumes rather than mo
 });
 
 describe('the supervisor’s own trouble reaches a human rather than ending the run', () => {
-  /** A driver that cannot provision, which is what a daemon that went away looks like. */
-  function breaks(driver: TestDriver, why = 'no daemon'): void {
-    driver.create = async () => {
-      throw new Error(why);
-    };
-  }
-
   /**
    * **The failure that would take every agent with it.** Only a `request` frame has an
    * agent-visible answer to fail into, so a failure reached from an event or a turn frame was
    * rethrown out of the listening loop — which is started as a promise nobody holds, and is
    * therefore an unhandled rejection, which under Node's default ends this process. This
    * process is the one holding every other agent in the run.
+   *
+   * **A store that cannot be written is what is left here.** A body that cannot be
+   * provisioned used to reach this too, and no longer does: it is the agent's parent's
+   * business now, and the describes below are where it is covered. What remains is what this
+   * hook was always for — the supervisor's own trouble, which no agent can act on.
    */
   it('reports a failure reached from a turn frame instead of rejecting into nothing', async () => {
     const run = await aPair();
@@ -252,11 +314,14 @@ describe('the supervisor’s own trouble reaches a human rather than ending the 
     const child = run.driver.latest('a-1')!;
     await child.until(() => child.messages().length > 0);
 
-    // The parent goes dormant, so its child's report has to wake it — and provisioning is
-    // what fails.
+    // The parent goes dormant, so its child's report has to be written down somewhere — and
+    // writing it down is what fails.
     parent.ask('a:1', 'await', {}, 0);
     await until(() => parent.destroyed, 'the parent being torn down');
-    breaks(run.driver);
+    const save = run.store.save.bind(run.store);
+    run.store.save = async () => {
+      throw new Error('the store is gone');
+    };
 
     const unhandled: unknown[] = [];
     const watch = (error: unknown): void => void unhandled.push(error);
@@ -268,38 +333,294 @@ describe('the supervisor’s own trouble reaches a human rather than ending the 
       await new Promise((resolve) => setTimeout(resolve, 50));
     } finally {
       process.off('unhandledRejection', watch);
+      run.store.save = save;
     }
 
     expect(unhandled).toEqual([]);
     expect(run.failures[0]?.agent).toBe('a-1');
-    expect((run.failures[0]?.error as Error).message).toBe('no daemon');
+    expect((run.failures[0]?.error as Error).message).toBe('the store is gone');
     // The run is still standing: the child that spoke is still being listened to.
-    expect(run.store.agent('a-1').state).toEqual({ status: 'waiting', request: null });
+    expect(run.driver.latest('a-1')?.destroyed).toBe(false);
+  });
+});
+
+/**
+ * **One agent that cannot be given a body is one agent's trouble.**
+ *
+ * `#deliver` rethrows when a boot fails — deliberately, having restored the mailbox exactly
+ * — and every request the supervisor serves ends in the settling loop that call reaches
+ * through. Left bare, that throw failed whichever request happened to be in flight, about
+ * whichever agent it happened to be about, and abandoned delivery to every agent ordered
+ * after the failing one in `ids()`. Neither is anything anybody chose, and this is where
+ * both are held.
+ */
+describe('one agent without a body does not cost another agent its request', () => {
+  it('answers a request made by a different agent, about a different agent', async () => {
+    const run = await aRun();
+    runs.push(run);
+    withoutBodiesFor(run.driver, 'a-1');
+
+    await run.supervisor.add(aRecord({ id: 'a', parent: null, tools: ['await'] }), 'Begin.');
+    // Neither of these throws, which is already half of it: `add` ends in the same settle.
+    await run.supervisor.add(aRecord({ id: 'a-1', parent: 'a', tools: [] }), 'Look at the tree.');
+    await run.supervisor.add(aRecord({ id: 'a-2', parent: 'a', tools: ['send'] }), 'Look at the other one.');
+
+    const peer = run.driver.latest('a-2')!;
+    await peer.until(() => peer.messages().length > 0);
+    peer.ask('a-2:1', 'send', { to: 'a', content: 'Found it.' });
+    await peer.until(() => peer.answers().size === 1, 'the send being answered');
+
+    expect(peer.answers().get('a-2:1')).toEqual({ ok: true, content: 'delivered to a' });
+    // And the sibling that could not boot still has exactly what it was sent.
+    expect(run.store.agent('a-1').mailbox).toMatchObject([{ from: 'a', content: 'Look at the tree.' }]);
   });
 
   /**
-   * The other half: the message a failed boot was supposed to carry is not lost.
+   * The second consequence, and the one nobody had looked at: the loop aborted rather than
+   * carrying on, so a healthy agent simply did not get its message because an unrelated
+   * agent elsewhere in the tree could not boot. Which agent that was depended on nothing but
+   * the order of `ids()`, so both orders are driven here.
+   */
+  it('delivers to a healthy agent whichever side of the failing one it falls on', async () => {
+    for (const bodiless of ['a-1', 'a-2']) {
+      const run = await aRun();
+      runs.push(run);
+      withoutBodiesFor(run.driver, bodiless);
+
+      await run.supervisor.add(aRecord({ id: 'a', parent: null, tools: [] }), 'Begin.');
+      await run.supervisor.add(aRecord({ id: 'a-1', parent: 'a', tools: [] }), 'One.');
+      await run.supervisor.add(aRecord({ id: 'a-2', parent: 'a', tools: [] }), 'Two.');
+
+      const healthy = bodiless === 'a-1' ? 'a-2' : 'a-1';
+      const peer = run.driver.latest(healthy)!;
+      await peer.until(() => peer.messages().length > 0, `${healthy} being woken past ${bodiless}`);
+
+      expect(peer.messages()).toEqual([`[from a] ${healthy === 'a-1' ? 'One.' : 'Two.'}`]);
+      expect(run.driver.all(bodiless)).toEqual([]);
+    }
+  });
+
+  /**
+   * The message a failed boot could not carry is not lost, and is not delivered twice.
    *
    * It leaves the mailbox before the boot, and the boot is what consumes it — so a
-   * provisioning failure in between puts it in no mailbox, no log and no living process,
-   * with the agent recorded as `working` for a later supervisor to resume into a body that
-   * is never told what it was woken for.
+   * provisioning failure in between would put it in no mailbox, no log and no living
+   * process. `#deliver` restores it exactly, which is what makes the next attempt an
+   * ordinary delivery rather than a recovery; the only thing that changed here is that the
+   * caller is no longer refused for it.
    */
-  it('leaves a message a failed boot could not carry where it was', async () => {
+  it('keeps an undelivered message where it was and hands it over exactly once', async () => {
     const run = await aPair();
     const root = run.driver.latest('a')!;
     await root.until(() => root.messages().length > 0);
     root.answered('nothing to report');
     await until(() => root.destroyed, 'the root going dormant');
 
-    breaks(run.driver);
-    await expect(run.supervisor.tell('Another thing.')).rejects.toThrow('no daemon');
+    const heal = withoutBodiesFor(run.driver, 'a');
+    // `tell` promised a message in a mailbox, and there is one. It never claimed a body.
+    await expect(run.supervisor.tell('Another thing.')).resolves.toBeUndefined();
 
-    // Still where it was put, and the agent still recorded as an agent waiting for it —
-    // which is what makes the next attempt an ordinary delivery rather than a recovery.
     expect(run.store.agent('a').mailbox).toEqual([{ from: null, content: 'Another thing.' }]);
     expect(run.store.agent('a').state).toEqual({ status: 'waiting', request: null });
     expect(run.driver.all('a')).toHaveLength(1);
+
+    // The daemon comes back, and the first attempt that succeeds is the one that delivers.
+    heal();
+    await run.supervisor.tell('And another.');
+    const woken = run.driver.latest('a')!;
+    await woken.until(() => woken.messages().length > 0, 'the held message finally landing');
+
+    expect(woken.messages()).toEqual(['[from the human] Another thing.']);
+    // The second is still queued behind it, because the agent it is for is mid-turn — which
+    // is the ordinary path and not anything this failure did.
+    expect(run.store.agent('a').mailbox).toEqual([{ from: null, content: 'And another.' }]);
+  });
+});
+
+/**
+ * **A body that cannot be provisioned is the parent's news, on the same terms as a death.**
+ *
+ * `#ended` already turns a body that stopped into a message in the parent's mailbox, and
+ * leaves retrying, replacing, escalating and giving up to the parent's weights. From the
+ * parent's side a body that never started is the same fact, so it takes the same path —
+ * and not `onFailure`, which is for what no agent can act on.
+ */
+describe('an agent whose body cannot be provisioned is reported to its parent', () => {
+  /** A parent, resident and mid-turn, over a child that will not boot. */
+  async function aParentOverABodilessChild(tools: string[] = []): Promise<Run> {
+    const run = await aRun();
+    runs.push(run);
+    withoutBodiesFor(run.driver, 'a-1');
+    await run.supervisor.add(aRecord({ id: 'a', parent: null, tools }), 'Begin.');
+    const parent = run.driver.latest('a')!;
+    await parent.until(() => parent.messages().length > 0);
+    await run.supervisor.add(aRecord({ id: 'a-1', parent: 'a', tools: [] }), 'Look at the tree.');
+    return run;
+  }
+
+  it('names the child and the failure, in the substrate’s own voice and not as a death', async () => {
+    const run = await aParentOverABodilessChild();
+    const parent = run.driver.latest('a')!;
+
+    // Queued while the parent is mid-turn, and handed over by the ordinary path once it is
+    // back at a boundary — the same two paths every other message takes.
+    expect(reportsTo(run, 'a')).toMatchObject([{ from: 'a-1', substrate: true }]);
+    parent.answered('nothing yet');
+    await parent.until(() => parent.messages().length > 1, 'the report reaching the parent');
+
+    const report = parent.messages()[1]!;
+    // Marked as the substrate's, so a parent reasoning about it never reads it as the words
+    // of the child it is about.
+    expect(report.startsWith(SUBSTRATE)).toBe(true);
+    expect(report).toContain('a-1 could not be given a body');
+    expect(report).toContain('no daemon');
+
+    // **Not a death**, which is the one reading that would do harm: a parent that believed
+    // it would replace a child that is about to wake up fine.
+    expect(report).not.toContain('terminated');
+    expect(report).toContain('has not ended');
+    expect(report).toContain('still addressable');
+    // **And not a loss**, which is the other: a parent that believed its message had gone
+    // would send it again, waking the child to two copies of its instruction.
+    expect(report).toContain('still queued');
+
+    // The supervisor's own hook is untouched by any of it.
+    expect(run.failures).toEqual([]);
+  });
+
+  it('reports once for one outage, and again for the next one', async () => {
+    const run = await aRun();
+    runs.push(run);
+    let bodiless = true;
+    const create = run.driver.create.bind(run.driver);
+    run.driver.create = async (request: SandboxRequest): Promise<Sandbox> => {
+      if (bodiless && request.id === 'a-1') throw new SandboxError('no daemon');
+      return create(request);
+    };
+
+    await run.supervisor.add(aRecord({ id: 'a', parent: null, tools: ['send'] }), 'Begin.');
+    const parent = run.driver.latest('a')!;
+    await parent.until(() => parent.messages().length > 0);
+    await run.supervisor.add(aRecord({ id: 'a-1', parent: 'a', tools: [] }), 'Look at the tree.');
+    expect(reportsTo(run, 'a')).toHaveLength(1);
+
+    // The child is retried inside every settle, and every settle is every request. The
+    // parent hears about the outage, not about each attempt on it.
+    await run.supervisor.tell('Again.');
+    await run.supervisor.tell('And again.');
+    expect(reportsTo(run, 'a')).toHaveLength(1);
+
+    // Reached — which is what ends the episode, and what the mark is cleared by.
+    bodiless = false;
+    await run.supervisor.tell('Once more.');
+    const child = run.driver.latest('a-1')!;
+    await child.until(() => child.messages().length > 0, 'the child finally waking');
+    child.answered('had a look');
+    await until(() => child.destroyed, 'the child going dormant again');
+    expect(reportsTo(run, 'a')).toHaveLength(1);
+
+    // And lost again. A second episode is a real transition, so it is a second report.
+    bodiless = true;
+    parent.ask('a:1', 'send', { to: 'a-1', content: 'One more thing.' });
+    await until(() => reportsTo(run, 'a').length === 2, 'the second episode being reported');
+    expect(parent.answers().get('a:1')).toEqual({ ok: true, content: 'delivered to a-1' });
+  });
+
+  /**
+   * **The boundary of what settling catches, which is one class and not "a boot went
+   * wrong".**
+   *
+   * `#deliver` reaches the store three times on the way to a body — the `save` that takes
+   * the message out of the mailbox, `#answerInLog`'s read, and the `transcript` read inside
+   * `#boot` — and a bare catch in the settling loop takes all three. What comes out of it
+   * then is a parent told `<id> could not be given a body: the store is gone`: a claim about
+   * the machine, handed to the one party with no reach into it, and an invitation to retry
+   * or replace a child that is not the thing that is broken. The id would be marked
+   * unreachable with it, so the stall read would discount its mail, and `onFailure` — whose
+   * whole remit this is — would never hear about it at all.
+   *
+   * So the catch is typed and the type is applied in `#boot`, around the driver's own calls
+   * and nothing else. These two drive the two store reads on either side of it.
+   */
+  it('lets a store failure under a boot leave by its own route, not as a missing body', async () => {
+    const run = await aRun();
+    runs.push(run);
+    await run.supervisor.add(aRecord({ id: 'a', parent: null, tools: [] }), 'Begin.');
+    const root = run.driver.latest('a')!;
+    await root.until(() => root.messages().length > 0);
+    root.answered('nothing to report');
+    await until(() => root.destroyed, 'the root going dormant');
+
+    // The daemon is fine. It is `#boot`'s own transcript read that is not.
+    const transcript = run.store.transcript.bind(run.store);
+    run.store.transcript = async () => {
+      throw new StoreError('the store is gone');
+    };
+
+    // The request in flight is refused with what actually happened, which is where a store
+    // failure went before settling learned to catch anything.
+    await expect(run.supervisor.tell('Another thing.')).rejects.toThrow('the store is gone');
+    expect(run.toHuman.filter((message) => message.substrate === true)).toEqual([]);
+    expect(run.failures).toEqual([]);
+
+    // And nothing was marked: "unreachable" means no body and no way to get one, which is
+    // not what a store that cannot be read is a report of. So the pending message still
+    // counts as work about to happen.
+    expect(run.supervisor.stalled).toBe(false);
+    expect(run.store.agent('a').mailbox).toEqual([{ from: null, content: 'Another thing.' }]);
+
+    // The message survived the failure exactly as a failed boot leaves it, so the next
+    // attempt is an ordinary delivery.
+    run.store.transcript = transcript;
+    await run.supervisor.tell('And another.');
+    const woken = run.driver.latest('a')!;
+    await woken.until(() => woken.messages().length > 0, 'the held message landing');
+    expect(woken.messages()).toEqual(['[from the human] Another thing.']);
+  });
+
+  it('carries a store failure with no request behind it to onFailure', async () => {
+    const run = await aPair();
+    const parent = run.driver.latest('a')!;
+    const child = run.driver.latest('a-1')!;
+    await child.until(() => child.messages().length > 0);
+
+    // The parent goes dormant awaiting its child, so delivering the child's report means
+    // writing the answer into the parent's log — and reading that log is what fails.
+    parent.ask('a:1', 'await', {}, 0);
+    await until(() => parent.destroyed, 'the parent being torn down');
+    run.store.transcript = async () => {
+      throw new StoreError('the store is gone');
+    };
+
+    // A turn frame has no request id to fail into, so this is the path that used to become
+    // an unhandled rejection and end the process holding every agent in the run.
+    child.answered('here is my report');
+    await until(() => run.failures.length > 0, 'the failure reaching the hook');
+
+    expect(run.failures[0]?.agent).toBe('a-1');
+    expect((run.failures[0]?.error as Error).message).toBe('the store is gone');
+    // Not the parent's business and never dressed up as one.
+    expect(reportsTo(run, 'a')).toEqual([]);
+    expect(run.toHuman.filter((message) => message.substrate === true)).toEqual([]);
+  });
+
+  it('reports a root that cannot be provisioned to the human', async () => {
+    const run = await aRun();
+    runs.push(run);
+    await run.supervisor.add(aRecord({ id: 'a', parent: null, tools: [] }), 'Begin.');
+    const root = run.driver.latest('a')!;
+    await root.until(() => root.messages().length > 0);
+    root.answered('nothing to report');
+    await until(() => root.destroyed, 'the root going dormant');
+
+    withoutBodiesFor(run.driver, 'a');
+    await run.supervisor.tell('Another thing.');
+
+    // The root's parent is the human, reached by `#post(null, …)` — the same path that
+    // carries the root's own messages out. No special case for the agent nobody spawned.
+    const report = run.toHuman.at(-1)!;
+    expect(report).toMatchObject({ from: 'a', substrate: true });
+    expect(report.content).toContain('a could not be given a body');
   });
 });
 
@@ -354,6 +675,39 @@ describe('a stalled tree is surfaced and never resolved', () => {
     await parent.until(() => parent.answers().size === 1, 'the pending message being delivered');
     expect(run.stalls).toEqual([]);
     expect(run.supervisor.stalled).toBe(false);
+  });
+
+  /**
+   * **The backstop for a parent that was told and did nothing about it.**
+   *
+   * A pending message counts as work about to happen on the grounds that delivery will wake
+   * somebody. Where delivery is what failed, that grounds is gone — and counting it anyway
+   * reports a tree that has stopped as a tree that is working, through the very door this
+   * read exists to close.
+   */
+  it('reports a tree stopped by an agent that cannot be provisioned', async () => {
+    const run = await aRun();
+    runs.push(run);
+    withoutBodiesFor(run.driver, 'a-1');
+
+    await run.supervisor.add(aRecord({ id: 'a', parent: null, tools: ['await'] }), 'Begin.');
+    const parent = run.driver.latest('a')!;
+    await parent.until(() => parent.messages().length > 0);
+    await run.supervisor.add(aRecord({ id: 'a-1', parent: 'a', tools: [] }), 'Look at the tree.');
+
+    // The parent is told its child has no body, which is the thing it can act on.
+    parent.ask('a:1', 'await', {}, 60_000);
+    await parent.until(() => parent.answers().size === 1, 'the report reaching the parent');
+    expect(parent.answers().get('a:1')?.content).toContain('a-1 could not be given a body');
+
+    // It does nothing about it and waits again, which is its right. Now every agent is
+    // suspended and the one thing pending cannot wake anyone.
+    parent.ask('a:2', 'await', {}, 60_000);
+    await until(() => run.stalls.length > 0, 'the stopped tree being surfaced');
+
+    expect(run.supervisor.stalled).toBe(true);
+    // Surfaced, and not resolved: the undeliverable message is still exactly where it was.
+    expect(run.store.agent('a-1').mailbox).toMatchObject([{ from: 'a', content: 'Look at the tree.' }]);
   });
 
   /**
