@@ -368,6 +368,26 @@ entry to `SUPERVISED` or to `local()` means checking `entry.test.ts` for it. The
 shape, worth recognising elsewhere: a test whose premise is an absence goes quiet rather
 than red when the absence is filled.
 
+## A capability's description is source, and the structural tests read it as such
+
+`supervisor/policy.test.ts` holds the claim that a runtime never branches on where an agent
+sits, and it holds it the only way a claim about an absence can be held: by reading the
+runtime's own files and refusing to find `.parent`, `isRoot`, `depth` or `ancestor` in any
+of them. It strips comments before it looks. **It does not strip string literals**, and a
+capability's description is a string literal hundreds of bytes long written for a model.
+
+So `read`'s description, saying a transcript is readable at "any depth below you", failed a
+test about branching. Nothing was wrong with the code and nothing in the failure said so —
+it named `main.ts` and a regular expression about the tree.
+
+Say it in words the test does not look for; "a child, a child of that child, anything below
+you" is the same sentence to a model. Widening the strip to exclude string literals is the
+wrong repair: the words are exactly as load-bearing inside a template as outside one, and
+the test's whole value is that it cannot be talked out of a match.
+
+The same file's `RUNTIME` list is enumerated by hand, so **a new module under `runtime/`
+is not covered until it is added there** — `transcript.ts` was added with this change.
+
 ## Writing an output flood in a test program takes `writeSync`, not `process.stdout.write`
 
 A loop around `process.stdout.write` looks like the way to make a program that floods its
@@ -378,6 +398,48 @@ nothing is ever flushed and the reader sees nothing while the writer grows witho
 `writeSync(1, …)` blocks when the pipe is full, which is what a flooding command actually
 does, and is what lets the reader on the other end — `exec`'s output cap — be the thing that
 stops it. `assistant-stub.ts --flood` is written that way for exactly this reason.
+
+## A `FileHandle`'s `write` can come up short, and nothing makes you look
+
+`handle.write(data)` issues one `write(2)`. It does not loop. What it managed is reported in
+the resolved object's `bytesWritten`, and the call resolves rather than throwing when that is
+less than what it was handed — so a caller advancing its own counter by the length of the
+data, which is the obvious way to write it, records bytes that never landed and gets no
+signal at all.
+
+The realistic road to a short write here is **a full volume**: a regular-file write returns
+short rather than `ENOSPC` when there is some room left and not enough, which is precisely
+the state a workspace reaches first. It is worst where the file is then published as complete
+— `runtime/transcript.ts` writes pages to a temporary and renames it over the target, and a
+short write turns that from a guard into the thing that publishes a truncated file under a
+whole one's name, atomically and undetectably.
+
+`handle.writeFile(data)` loops until every byte is out, and when called repeatedly on the
+same handle it continues from that handle's current position, so a per-page write stays a
+per-page write. Use it for anything whose completeness is load-bearing. `supervisor/store.ts`'s
+`save()` and `runtime/transcript.ts` both do. `handle.write` is fine where a short write is
+survivable — `store.ts`'s per-event append is one line to an open log, re-derivable if it
+tears — but "survivable" is a decision to make rather than a default to inherit.
+
+## A transcript answers `grep` with claims as well as acts, and an argv is escaped twice
+
+`read` exists so a parent can check a child's report against the record, and the record is
+complete in both directions: a child's own report messages are `message` events sitting on
+the same kind of line as its `tool_call`s, exactly as the spec requires — nothing is selected
+and nothing is elided. So a prose `grep` over the file matches the claim as readily as the
+act, and what distinguishes them is the `"type"` the line opens with. Printing the line
+answers the question; `grep -c` discards precisely the field that disambiguates, which makes
+a count the one shape of the question the file cannot answer.
+
+The quieter half is the escaping. `ToolCallEvent.arguments` is the provider's JSON string
+kept unparsed — `events.ts` says so in as many words — so it is a JSON string *inside* a
+JSON line, and the argv `["npm","run","lint"]` lands on disk as `\"npm\",\"run\",\"lint\"`.
+A grep for the unescaped form matches nothing. That is a false negative on the one surface
+whose whole value is catching a false claim, though it fails in the safe direction: it
+prints nothing at all, which invites another look rather than a wrong conclusion.
+
+`jq`, which `read`'s own description names for this, parses both layers and gets it right.
+Reach for it over `grep` whenever the question is *which commands actually ran*.
 
 ## The substrate's manifest, and the entry point that needs no build
 

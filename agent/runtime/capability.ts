@@ -16,12 +16,14 @@
  * supervisor and wait for the answer. {@link dispatch} cannot tell them apart and neither
  * can the model — so an agent never *holds* the ability to spawn, it only asks.
  *
- * **Both halves of this interface now ship.** `spawn`, `stop`, `send` and `await` raise a
- * request; `fs` and `exec` (`workspace.ts`) do their work in this process, inside the
- * agent's own container, and raise nothing. That was not true when this file was written —
- * every shipped capability was a supervised one and the local half was exercised only by
- * the test suite's own — and the fact that adding the local half required no change here is
- * the evidence for the paragraph above rather than a coincidence.
+ * **Both halves of this interface now ship, and so does one that is both.** `spawn`, `stop`,
+ * `send` and `await` raise a request; `fs` and `exec` (`workspace.ts`) do their work in this
+ * process, inside the agent's own container, and raise nothing; `read` (`transcript.ts`)
+ * raises and then writes what it was answered into the workspace. That was not true when
+ * this file was written — every shipped capability was a supervised one and the local half
+ * was exercised only by the test suite's own — and the fact that adding the local half, and
+ * later the composition of the two, required no change here is the evidence for the
+ * paragraph above rather than a coincidence.
  *
  * What still holds the property, and is still worth keeping: the requirement that an empty
  * registry be valid, which is what forces the loop to have no capability-specific branch to
@@ -62,11 +64,13 @@ export interface Capability {
    * is said here, where they would be reading, rather than left to be discovered.
    *
    * It is declared anyway because `agent-runtime` requires a capability to be *able* to
-   * declare one, and the consumer is named: the supervisor's `read` (ENG-212), which is what
-   * gives a parent something to watch a long invocation through. `sandbox/index.ts` refuses
-   * the mirror of this and the difference is the point — there is no policy behind a sandbox
-   * option nobody set, whereas this has a specified shape and a stated reader, and inventing
-   * it later would mean revising every implementation written in between.
+   * declare one, and the consumer it was named for has now shipped without becoming one:
+   * ENG-212's `read` serves what was *stored*, and a parent watching a long invocation as it
+   * happens wants what is not in the transcript yet. So the reader is still ahead of this
+   * rather than beside it. `sandbox/index.ts` refuses the mirror of this and the difference
+   * is the point — there is no policy behind a sandbox option nobody set, whereas this has a
+   * specified shape, and inventing it later would mean revising every implementation written
+   * in between.
    */
   progress?(input: unknown): AsyncIterable<string>;
 }

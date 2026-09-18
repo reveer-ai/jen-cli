@@ -16,7 +16,7 @@
  * stands in for the supervisor, so they face each other rather than overlapping.
  */
 import { spawn, type ChildProcess } from 'node:child_process';
-import { mkdtemp, readFile, realpath, rm } from 'node:fs/promises';
+import { mkdtemp, readdir, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { createServer, type Server } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -958,6 +958,289 @@ describe('a capability the agent holds is answered where it stands', () => {
 
     const sent = received[1]?.body as { messages: { role: string; content: string }[] };
     expect(sent.messages.at(-1)?.content).toContain('changed the workspace');
+    await peer.stop();
+  });
+});
+
+/**
+ * `read`, which raises a request *and* does work where it stands.
+ *
+ * The two kinds above are the whole of what the substrate had: one forwards, one acts. This
+ * one does both in a single invocation — it asks the supervisor for a descendant's
+ * transcript, pages it down, writes it into this agent's own workspace, and answers the
+ * model with the path. What these hold is that the composition is invisible from every side
+ * of it: the declaration reaches the provider like any other, the frames on the channel are
+ * ordinary requests, the result is an ordinary tool result, and the only thing that is
+ * different is a file the model has to go and open for itself.
+ *
+ * The peer plays the supervisor's half here as it does above, which is what lets a test
+ * decide what the store holds — including a transcript far longer than anything a result
+ * could carry, which is the case the whole design exists for.
+ */
+describe('a capability that raises and then works where it stands', () => {
+  /** The model asking to see what a child actually did. */
+  function reads(id: string): Record<string, unknown> {
+    return {
+      role: 'assistant',
+      content: null,
+      refusal: null,
+      annotations: [],
+      tool_calls: [{ id: 'call-1', type: 'function', function: { name: 'read', arguments: JSON.stringify({ id }) } }],
+    };
+  }
+
+  function aMessage(content: string): Event {
+    return { type: 'message', at: '2026-01-01T00:00:00.000Z', from: 'self', content };
+  }
+
+  let workspace = '';
+  const pumps: NodeJS.Timeout[] = [];
+
+  beforeEach(async () => {
+    workspace = await realpath(await mkdtemp(join(tmpdir(), 'jen-entry-')));
+  });
+
+  afterEach(async () => {
+    for (const pump of pumps.splice(0)) clearInterval(pump);
+    await rm(workspace, { recursive: true, force: true });
+  });
+
+  /**
+   * The supervisor's half of `read`: answer each request as it appears.
+   *
+   * A pump rather than a single reply, because the whole point of the capability is that one
+   * invocation may raise more than once and a test cannot know in advance how many.
+   */
+  function answering(answer: (input: Record<string, unknown>) => { ok: boolean; content: string }): Record<
+    string,
+    unknown
+  >[] {
+    const asked: Record<string, unknown>[] = [];
+    let served = 0;
+    pumps.push(
+      setInterval(() => {
+        // Armed before the process starts, so that the first request cannot be raised while
+        // nothing is listening for it.
+        const peer = current;
+        if (peer === undefined) return;
+        for (const frame of peer.frames.filter((one) => one.t === 'request').slice(served)) {
+          served += 1;
+          const input = (frame.input ?? {}) as Record<string, unknown>;
+          asked.push(input);
+          peer.write({ t: 'answer', id: frame.id, ...answer(input) });
+        }
+      }, 5),
+    );
+    return asked;
+  }
+
+  /** The store, served the way `supervisor/index.ts`'s `#reading` serves it. */
+  function serving(transcript: Event[]) {
+    return (input: Record<string, unknown>) => {
+      const from = typeof input.from === 'number' ? input.from : 0;
+      const count = typeof input.count === 'number' ? input.count : transcript.length;
+      return {
+        ok: true,
+        content: JSON.stringify({
+          id: input.id,
+          from,
+          total: transcript.length,
+          events: transcript.slice(from, from + count),
+        }),
+      };
+    };
+  }
+
+  let current: Peer | undefined;
+  function reading(transcript: Event[], tools = ['read']): { peer: Peer; asked: Record<string, unknown>[] } {
+    const asked = answering(serving(transcript));
+    current = start({ tools, workspace });
+    return { peer: current, asked };
+  }
+
+  /** What the model was actually given for its call. */
+  function resultOf(peer: Peer): { content: string; ok: boolean } {
+    const result = peer.events.find((event) => event.type === 'tool_result');
+    return result as unknown as { content: string; ok: boolean };
+  }
+
+  /**
+   * Registering is not granting, held for the one capability whose registration is new.
+   * Both processes run the same bytes and one of them cannot see `read` at all.
+   */
+  it('offers `read` to a record that names it, and not to one that does not', async () => {
+    const granted = start({ tools: ['read', 'fs'], workspace });
+    await granted.tell('Say something.');
+    const withRead = received[0]?.body as { tools?: { function: { name: string } }[] };
+    expect(withRead.tools?.map((tool) => tool.function.name)).toEqual(['read', 'fs']);
+    await granted.stop();
+
+    received = [];
+    const withheld = start({ tools: ['fs'], workspace });
+    await withheld.tell('Say something.');
+    const without = received[0]?.body as { tools?: { function: { name: string } }[] };
+    expect(without.tools?.map((tool) => tool.function.name)).toEqual(['fs']);
+    await withheld.stop();
+  });
+
+  it('answers with a location in the workspace and not with the transcript', async () => {
+    replies = [reads('a-1'), ORDINARY];
+    const { peer } = reading([aMessage('I ran `npm test` and it passed.')]);
+    await peer.tell('Check the child.');
+
+    const result = resultOf(peer);
+    expect(result.ok).toBe(true);
+    expect(result.content).toContain('.transcripts/a-1.jsonl');
+    // The claim the whole design rests on: what the child said is on disk and nowhere in
+    // what the model was handed.
+    expect(result.content).not.toContain('npm test');
+
+    const written = await readFile(join(workspace, '.transcripts', 'a-1.jsonl'), 'utf8');
+    expect(JSON.parse(written.trim()) as Event).toEqual(aMessage('I ran `npm test` and it passed.'));
+    await peer.stop();
+  });
+
+  /**
+   * The epic's own test: reading a transcript far larger than a result may carry must not
+   * put it into the caller's context. It is checked at the seam that actually decides it —
+   * the bytes of the *next* request to the provider, which is where a result is paid for
+   * again and again for the rest of an agent's life.
+   */
+  it('writes a transcript far larger than a result may carry, and hands the model a path', async () => {
+    const transcript = Array.from({ length: 1_200 }, (_, at) => aMessage(`step-${at} ${'detail '.repeat(20)}`));
+    replies = [reads('a-1'), ORDINARY];
+    const { peer, asked } = reading(transcript);
+    await peer.tell('Check the child.');
+
+    const written = await readFile(join(workspace, '.transcripts', 'a-1.jsonl'), 'utf8');
+    expect(written.trimEnd().split('\n')).toHaveLength(1_200);
+    expect(Buffer.byteLength(written)).toBeGreaterThan(200_000);
+
+    // Paged rather than fetched whole, so the runtime never holds the log at once.
+    expect(asked.length).toBeGreaterThan(1);
+    expect(asked.every((input) => typeof input.from === 'number' && typeof input.count === 'number')).toBe(true);
+
+    // What it cost the model: a sentence. The second request is the one carrying the result.
+    const result = resultOf(peer);
+    expect(result.content.length).toBeLessThan(600);
+    const next = JSON.stringify((received[1] as { body: unknown }).body);
+    expect(next).not.toContain('step-1199');
+    expect(next.length).toBeLessThan(10_000);
+    await peer.stop();
+  });
+
+  it('keeps what the provider returned as reasoning, in the representation it returned it in', async () => {
+    const reasoning: Event = {
+      type: 'reasoning',
+      at: '2026-01-01T00:00:00.000Z',
+      content: 'Checking the loader first.',
+      opaque: { type: 'reasoning', id: 'rs_1', summary: [], encrypted_content: 'AAAA' },
+    };
+    replies = [reads('a-1'), ORDINARY];
+    const { peer } = reading([reasoning]);
+    await peer.tell('Check the child.');
+
+    const written = await readFile(join(workspace, '.transcripts', 'a-1.jsonl'), 'utf8');
+    // Verbatim, `opaque` included. Deciding on the way past that a field was only meant for
+    // replay is the interpreting a verification surface may not do.
+    expect(JSON.parse(written.trim()) as Event).toEqual(reasoning);
+    await peer.stop();
+  });
+
+  it('replaces what a previous read wrote rather than accumulating beside it', async () => {
+    // Two turns, each a read and then an ordinary answer: the stub replies by request
+    // number, so a turn's script is its pair of entries.
+    replies = [reads('a-1'), ORDINARY, reads('a-1'), ORDINARY];
+    const transcript = [aMessage('first')];
+    const { peer } = reading(transcript);
+
+    await peer.tell('Check the child.');
+    expect(await readFile(join(workspace, '.transcripts', 'a-1.jsonl'), 'utf8')).toContain('first');
+
+    // The child works on while the parent reads, which is what makes a second read worth
+    // making at all — and the file is the transcript as most recently fetched.
+    transcript.push(aMessage('second'));
+    await peer.tell('Check it again.');
+
+    expect(await readdir(join(workspace, '.transcripts'))).toEqual(['a-1.jsonl']);
+    const written = await readFile(join(workspace, '.transcripts', 'a-1.jsonl'), 'utf8');
+    expect(written.trimEnd().split('\n')).toHaveLength(2);
+    expect(written).toContain('second');
+    await peer.stop();
+  });
+
+  it('returns a failed result when the transcript cannot be written, and the agent carries on', async () => {
+    // A file where the directory has to go. The write fails after the supervisor has already
+    // answered, which is the case the local half of a composing capability introduces.
+    await writeFile(join(workspace, '.transcripts'), 'in the way\n');
+    replies = [reads('a-1'), ORDINARY, reads('a-1'), ORDINARY];
+    const { peer } = reading([aMessage('I ran `npm test` and it passed.')]);
+
+    expect(await peer.tell('Check the child.')).toBe('There is nothing here but thought.');
+    const failure = resultOf(peer);
+    expect(failure.ok).toBe(false);
+    expect(failure.content).toContain('.transcripts/a-1.jsonl');
+    expect(failure.content).toMatch(/EEXIST|ENOTDIR|not a directory|file already exists/i);
+
+    // Nothing was lost: the supervisor still holds it, so the same call works once what was
+    // in the way is gone.
+    await rm(join(workspace, '.transcripts'));
+    await peer.tell('Try that again.');
+    expect(peer.events.filter((event) => event.type === 'tool_result').at(-1)).toMatchObject({ ok: true });
+    expect(await readFile(join(workspace, '.transcripts', 'a-1.jsonl'), 'utf8')).toContain('npm test');
+    await peer.stop();
+  });
+
+  it('carries a refusal back to the model as an ordinary failed result', async () => {
+    replies = [reads('a-2'), ORDINARY];
+    answering(() => ({ ok: false, content: '"a-2" is not below you, so its transcript is not yours to read.' }));
+    current = start({ tools: ['read'], workspace });
+    const peer = current;
+
+    expect(await peer.tell('Read the other one.')).toBe('There is nothing here but thought.');
+    // Unchanged, and the turn continued — the refusal is the supervisor's sentence and this
+    // capability is not in the business of rewording it.
+    expect(resultOf(peer)).toMatchObject({
+      ok: false,
+      content: '"a-2" is not below you, so its transcript is not yours to read.',
+    });
+    // Nothing was created for a read that was refused.
+    expect(await readdir(workspace)).toEqual([]);
+    await peer.stop();
+  });
+
+  /**
+   * A snapshot, not a tail. `supervisor/index.ts`'s `#reading` computes `total` after it has
+   * sliced, so a child appending while its parent reads raises the bound the page it just
+   * served failed to reach. A loop that took `total` from every answer would therefore end
+   * when the child fell behind a sub-millisecond pipe rather than when the log ran out — no
+   * bound at all, for exactly the busy child worth reading. This child never falls behind.
+   */
+  it('reads the transcript as it stood at the call, and does not follow a child still writing', async () => {
+    const transcript = Array.from({ length: 600 }, (_, at) => aMessage(`stored-${at}`));
+    const serve = serving(transcript);
+    let later = 0;
+    const asked = answering((input) => {
+      const answer = serve(input);
+      // The child works on, a page's worth per round trip, for as long as anything asks.
+      for (let n = 0; n < 512; n += 1, later += 1) transcript.push(aMessage(`later-${later}`));
+      return answer;
+    });
+    replies = [reads('a-1'), ORDINARY];
+    current = start({ tools: ['read'], workspace });
+    const peer = current;
+    await peer.tell('Check the child.');
+
+    const written = await readFile(join(workspace, '.transcripts', 'a-1.jsonl'), 'utf8');
+    expect(written.trimEnd().split('\n')).toHaveLength(600);
+    // Not one event that was appended after the call, which is what the result promises the
+    // model when it says the file is what was stored at the moment it asked.
+    expect(written).not.toContain('later-');
+
+    // Two requests for 600 events at 512 a page, the second asking for the remainder of the
+    // snapshot rather than for a whole page whose tail would be the child's later work.
+    expect(asked).toHaveLength(2);
+    expect(asked[1]).toMatchObject({ from: 512, count: 88 });
     await peer.stop();
   });
 });

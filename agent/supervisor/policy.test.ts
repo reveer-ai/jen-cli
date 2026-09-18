@@ -106,7 +106,16 @@ describe('nothing in the supervisor releases a workspace', () => {
  * time and never compares two.
  */
 describe('the supervisor is outside every agent, and no agent is inside it', () => {
-  const RUNTIME = ['index.ts', 'main.ts', 'loop.ts', 'boot.ts', 'capability.ts', 'supervised.ts', 'projection.ts']
+  const RUNTIME = [
+    'index.ts',
+    'main.ts',
+    'loop.ts',
+    'boot.ts',
+    'capability.ts',
+    'supervised.ts',
+    'transcript.ts',
+    'projection.ts',
+  ]
     .map((name) => join(import.meta.dirname, '..', 'runtime', name))
     .filter((path) => existsSync(path));
 
