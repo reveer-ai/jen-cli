@@ -421,6 +421,26 @@ per-page write. Use it for anything whose completeness is load-bearing. `supervi
 survivable — `store.ts`'s per-event append is one line to an open log, re-derivable if it
 tears — but "survivable" is a decision to make rather than a default to inherit.
 
+## A transcript answers `grep` with claims as well as acts, and an argv is escaped twice
+
+`read` exists so a parent can check a child's report against the record, and the record is
+complete in both directions: a child's own report messages are `message` events sitting on
+the same kind of line as its `tool_call`s, exactly as the spec requires — nothing is selected
+and nothing is elided. So a prose `grep` over the file matches the claim as readily as the
+act, and what distinguishes them is the `"type"` the line opens with. Printing the line
+answers the question; `grep -c` discards precisely the field that disambiguates, which makes
+a count the one shape of the question the file cannot answer.
+
+The quieter half is the escaping. `ToolCallEvent.arguments` is the provider's JSON string
+kept unparsed — `events.ts` says so in as many words — so it is a JSON string *inside* a
+JSON line, and the argv `["npm","run","lint"]` lands on disk as `\"npm\",\"run\",\"lint\"`.
+A grep for the unescaped form matches nothing. That is a false negative on the one surface
+whose whole value is catching a false claim, though it fails in the safe direction: it
+prints nothing at all, which invites another look rather than a wrong conclusion.
+
+`jq`, which `read`'s own description names for this, parses both layers and gets it right.
+Reach for it over `grep` whenever the question is *which commands actually ran*.
+
 ## The substrate's manifest, and the entry point that needs no build
 
 `agent/package.json` exists because the runtime has a dependency and the repository's
