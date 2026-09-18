@@ -27,7 +27,9 @@ Two seams are unproven and they fail differently, which is why this change treat
 
 ### Modified Capabilities
 
-None. The nine criteria are behaviours `agent-runtime`, `agent-sandbox` and `agent-supervisor` already specify; demonstrating them changes no requirement. Two adjacent requirements were read against this change and both hold as written:
+- `agent-supervisor` gains one requirement, added by the run rather than planned: **a message given to a body outlives the supervisor ending that body.** A message that begins a turn is the one thing the supervisor hands over before writing it down anywhere — the runtime records it, as the first act of the turn — so between leaving the mailbox and reaching the log it exists only in the channel. A body that *dies* there is survivable, because its parent is told; a body the supervisor *ends* is not, because an intended ending is reported to nobody. The first run of this change by hand said one thing to a root and closed the operator, and the instruction was gone from the mailbox, absent from the transcript, and the agent left recorded as working over a log with nothing new in it.
+
+The nine criteria themselves are behaviours `agent-runtime`, `agent-sandbox` and `agent-supervisor` already specify, and demonstrating them changes no requirement. Two adjacent requirements were read against this change and both hold as written:
 
 - `agent-substrate` excludes the substrate from the repository's build, checks and published tarball, and names the condition for reversing that — something depending on it, or it being published. Neither becomes true here: the image is built locally from the working tree, nothing outside `agent/` imports the operator, and the acceptance tier joins the two suites CI already does not run. If the image is ever pushed to a registry, that clause fires and this exclusion is what has to be revisited.
 - `agent-workspace-tools` requires that no part of the substrate name a particular assistant. The pinned assistant therefore belongs to the image and **not** to `agent/package.json` — declaring it as a substrate dependency would make the substrate name one, which is the requirement's plain words. The image provides a command; the substrate still knows nothing about it.
@@ -36,7 +38,7 @@ None. The nine criteria are behaviours `agent-runtime`, `agent-sandbox` and `age
 
 **New**: `agent/Dockerfile` and whatever it needs to build; the operator program and its entry in the substrate's manifest `bin`; the acceptance tier and the fake gateway supporting it; a written record of the live pass and how to repeat it.
 
-**Changed**: `agent/package.json` gains a second executable. `agent/AGENTS.md` and `agent/supervisor/AGENTS.md` gain what the first real run teaches — the supervisor's own note already defers the cost of its unbounded provisioning retry to "ENG-199's run rather than to a constant in this file", and this is that run.
+**Changed**: `agent/package.json` gains a second executable. `supervisor/index.ts` returns a message it gave a body that never recorded it, which is the one fix the run found. `agent/AGENTS.md` and `agent/supervisor/AGENTS.md` gain what the first real run teaches — the supervisor's own note already defers the cost of its unbounded provisioning retry to "ENG-199's run rather than to a constant in this file", and this is that run.
 
 **Unchanged**: the repository's `package.json`, `tsconfig.json`, `vitest.config.ts`, CI workflow and published tarball, all of which `agent-substrate` requires be left alone on the substrate's account.
 

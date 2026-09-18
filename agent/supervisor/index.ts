@@ -164,6 +164,24 @@ interface Body {
   timer?: ReturnType<typeof setTimeout>;
   /** Set where the supervisor is the one ending it, so its exit is not read as a death. */
   intended?: true;
+  /**
+   * A message this body was handed and has not yet said it recorded.
+   *
+   * **The one thing the supervisor gives away without writing down first.** A message that
+   * answers an outstanding call reaches a dormant agent through `#answerInLog`, which is
+   * durable by construction; a message that *begins a turn* is written by the runtime, as
+   * the first act of `turn()`, so between `#say` and the event coming back it exists in a
+   * pipe and nowhere else. It has already left the mailbox, because `#deliver` takes it out
+   * before it hands it over.
+   *
+   * Which is survivable for a body that *dies* — the exit is a termination its parent can
+   * act on — and is not survivable for one the supervisor ends itself, because an intended
+   * ending is reported to nobody. `shutdown()` straight after a `tell()` is the ordinary
+   * way to reach it, and what it costs is a person's instruction, silently: gone from the
+   * mailbox, absent from the log, and the agent left recorded as `working` on a transcript
+   * that has nothing new in it.
+   */
+  handed?: Message;
 }
 
 export interface SupervisorOptions {
@@ -538,6 +556,18 @@ export class Supervisor {
       let frame: FromAgent;
       try {
         frame = parseFromAgent(line);
+        // **The one frame this loop reads rather than only routes**, and it is read here
+        // rather than in `#frame` on purpose. What it acknowledges is {@link Body.handed} —
+        // the body has taken down the message it was given, so there is nothing left for a
+        // suspension to put back. `#frame` runs on the queue, and a frame sitting behind a
+        // queued `shutdown` would not be reached until after that shutdown had already
+        // decided whether the message was lost. Ordering makes this exact rather than
+        // approximate: frames arrive in the order the body sent them and this is the first
+        // thing it sends on a turn, so an unread acknowledgement means nothing of that turn
+        // has been read.
+        if (frame.t === 'event' && frame.event.type === 'message' && frame.event.from === 'parent') {
+          body.handed = undefined;
+        }
       } catch (error) {
         // Reported to the agent that sent it, and nothing else happens: its other
         // outstanding requests are untouched, because none of them is what was unreadable.
@@ -613,6 +643,26 @@ export class Supervisor {
     // no longer there, and nothing distinguishes either from an agent that behaved.
     await this.#store.sync(id).catch(() => {});
     await body.sandbox.destroy().catch(() => {});
+
+    // **What the body never acknowledged goes back where it came from.** An intended ending
+    // is reported to nobody, so a message lost here is lost in silence — see {@link
+    // Body.handed}. It is restored to the head of the mailbox and the agent to the state it
+    // was taken out of, which is exactly the state `#deliver` read: `waiting` on nothing,
+    // because a message that begins a turn is one no request was outstanding for.
+    //
+    // **Nothing is settled from here.** The two callers that reach a live body are a
+    // shutdown, where delivering again is the opposite of what was asked for, and a
+    // dismissal, whose agent is not `waiting` and is skipped. The message waits in the
+    // mailbox for whoever takes the run up next, which is what `resume()` ends by doing.
+    const handed = body.handed;
+    if (handed === undefined) return;
+    const agent = this.#store.agent(id);
+    if (agent.state.status !== 'working') return;
+    await this.#store.save(id, {
+      ...agent,
+      state: { status: 'waiting', request: null },
+      mailbox: [handed, ...agent.mailbox],
+    });
   }
 
   /**
@@ -1163,6 +1213,11 @@ export class Supervisor {
     const body = this.#bodies.get(id);
     if (body !== undefined) {
       this.#disarm(id);
+      // Only where the message begins a turn. An answer to an outstanding call is written
+      // into the log by the runtime as a `tool_result` either way, and for a dormant agent
+      // it is written by `#answerInLog` before anything boots — neither is a message this
+      // supervisor is holding alone. See {@link Body.handed}.
+      if (answering === null) body.handed = message;
       await this.#say(
         id,
         answering === null ? { t: 'message', content } : { t: 'answer', id: answering, ok: true, content },
@@ -1180,7 +1235,10 @@ export class Supervisor {
       // about to be handed a message frame, and a step taken before that arrived would be a
       // step on nothing.
       const woken = await this.#boot(id, answering !== null);
-      if (answering === null) await this.#say(id, { t: 'message', content }, woken);
+      if (answering === null) {
+        woken.handed = message;
+        await this.#say(id, { t: 'message', content }, woken);
+      }
     } catch (error) {
       // **The message is now in no mailbox, no log and no living process.** It left the
       // mailbox above, and the boot that was supposed to consume it did not happen — so

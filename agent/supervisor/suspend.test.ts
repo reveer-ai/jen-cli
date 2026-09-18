@@ -318,3 +318,109 @@ describe('a transcript is durable before the body is allowed to end', () => {
     expect(atTeardown).toBe(calling().length);
   });
 });
+
+/**
+ * The one message the supervisor gives away before writing it down anywhere.
+ *
+ * A message that answers an outstanding call is durable by the time a body sees it — the
+ * runtime records it as a `tool_result`, and for a dormant agent `#answerInLog` puts it in
+ * the log *before* anything boots. A message that **begins a turn** is not: `#deliver` takes
+ * it out of the mailbox, hands it down the pipe, and the runtime is what records it, as the
+ * first act of `turn()`. Between those two moments it exists in a pipe and nowhere else.
+ *
+ * That is survivable for a body that dies — its exit becomes a termination its parent can
+ * act on. It is not survivable for a body the supervisor ends itself, because an intended
+ * ending is reported to nobody. **`shutdown()` straight after `tell()` is the ordinary way
+ * to reach it**, and ENG-199's first run by hand did exactly that: the instruction was gone
+ * from the mailbox, absent from the transcript, and the agent was left recorded as `working`
+ * over a log with nothing new in it. Nothing anywhere said so.
+ */
+describe('a message handed to a body that never recorded it is not lost with the body', () => {
+  /** An agent at a turn boundary, resident, about to be told something. */
+  async function atABoundary(): Promise<{ run: Run; peer: Peer }> {
+    const run = await aRun();
+    runs.push(run);
+    await run.supervisor.add(aRecord({ id: 'a', tools: ['await'] }), 'Begin.');
+    const peer = run.driver.latest('a')!;
+    await peer.until(() => peer.messages().length === 1, 'its opening message');
+    // A turn that ended and asked for nothing, which is where a body is kept only as long as
+    // the next message takes to arrive.
+    peer.answered('Done.', 60_000);
+    await until(() => run.store.agent('a').state.status === 'waiting', 'the turn ending');
+    return { run, peer };
+  }
+
+  it('puts it back in the mailbox when the run is ended before the body acknowledges it', async () => {
+    const { run, peer } = await atABoundary();
+
+    await run.supervisor.tell('One more thing.');
+    await peer.until(() => peer.messages().length === 2, 'the second message reaching the body');
+    // Handed over and nowhere else: out of the mailbox, and the runtime has not said it took
+    // it down. This is the window.
+    expect(run.store.agent('a').mailbox).toEqual([]);
+    expect(run.store.agent('a').state.status).toBe('working');
+
+    await run.supervisor.shutdown();
+
+    expect(run.store.agent('a').mailbox).toEqual([{ from: null, content: 'One more thing.' }]);
+    // And back in the state it was taken out of, so whoever takes the run up next delivers
+    // it as a message that begins a turn rather than resuming a step nobody ever took.
+    expect(run.store.agent('a').state).toEqual({ status: 'waiting', request: null });
+  });
+
+  it('delivers it exactly once when the run is taken up again', async () => {
+    const { run } = await atABoundary();
+    await run.supervisor.tell('One more thing.');
+    await run.supervisor.shutdown();
+
+    const second = await aRun({ directory: run.directory, run: run.store.run });
+    runs.push(second);
+    await second.supervisor.resume();
+    const woken = second.driver.latest('a')!;
+    await woken.until(() => woken.messages().length === 1, 'the message being delivered again');
+
+    expect(woken.messages()).toEqual(['[from the human] One more thing.']);
+    expect(second.store.agent('a').mailbox).toEqual([]);
+  });
+
+  it('leaves it alone once the body has said it recorded it', async () => {
+    const { run, peer } = await atABoundary();
+
+    await run.supervisor.tell('One more thing.');
+    await peer.until(() => peer.messages().length === 2, 'the second message reaching the body');
+    // What `turn()` does first, and the whole of what the supervisor waits to see. From here
+    // the message is in the transcript, so restoring it would deliver it twice.
+    peer.append({ type: 'message', at: AT, from: 'parent', content: '[from the human] One more thing.' });
+    await untilStored(
+      async () => (await run.store.transcript('a')).some((event) => event.type === 'message' && event.from === 'parent' && event.content.includes('One more thing')),
+      'the body recording it',
+    );
+
+    await run.supervisor.shutdown();
+    expect(run.store.agent('a').mailbox).toEqual([]);
+    expect(run.store.agent('a').state.status).toBe('working');
+  });
+
+  /**
+   * A body that *died* is deliberately left alone, and the line is worth stating.
+   *
+   * Its parent is told the child terminated, and the parent's weights choose between
+   * retrying, replacing, escalating and giving up. Putting the message back would wake the
+   * child again on the supervisor's own initiative — retrying a body that just failed, which
+   * is the judgment `#ended` already declines to make.
+   */
+  it('does not put it back when the body died rather than being ended', async () => {
+    const { run, peer } = await atABoundary();
+    await run.supervisor.tell('One more thing.');
+    await peer.until(() => peer.messages().length === 2, 'the second message reaching the body');
+
+    // Two, because the turn this agent already ended reached the human as well — waiting on
+    // "anything at all" would have been satisfied by that one before the death arrived.
+    peer.die();
+    await until(() => run.toHuman.length === 2, 'the death being reported upward');
+
+    expect(run.toHuman.at(-1)?.content).toContain('a terminated');
+    expect(run.toHuman.at(-1)?.substrate).toBe(true);
+    expect(run.store.agent('a').mailbox).toEqual([]);
+  });
+});
