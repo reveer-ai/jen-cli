@@ -555,55 +555,102 @@ describe('a dismissal reaches a subtree and keeps everything it built', () => {
 });
 
 /**
- * **What a refusal does not cover, pinned here because the line next to it is so easy to
- * read as covering everything.**
+ * **What a refusal does not cover, and what a failure to provision is answered with
+ * instead.**
  *
- * Every refusal this change makes happens before anything is written, and the tests above
- * say so. A spawn that fails while *provisioning* the child's body is a different thing
- * entirely and it is not this change's to settle — the delivery path it fails on belongs to
- * the supervisor's own settling, which every request ends with, so answering it differently
- * for `spawn` alone would make `spawn` disagree with `send` about what a failed settle
- * means.
+ * Every refusal this file's other tests make happens before anything is written. A spawn
+ * that fails while *provisioning* the child's body is the opposite shape — the record, the
+ * parent link and the opening are all already there — and what it owes its caller is
+ * ENG-214's, because the path it fails on is the settling every request ends with and the
+ * answer has to be the same for `send`, `tell`, `resume` and an ordinary turn.
  *
- * So this states today's behaviour rather than endorsing it, and it is written to fail the
- * moment somebody changes it deliberately. See `AGENTS.md` beside this file, and the thread
- * on the pull request.
+ * That answer: **a request is answered by its own outcome.** A spawn promises a child's
+ * record and its parentage, and it never claimed a body existed, so it is answered with the
+ * child's id. The missing body is reported to the parent as a message it can act on — see
+ * `failure.test.ts`, where the report itself is covered.
+ *
+ * The describe this replaces pinned the opposite behaviour so that a deliberate change to it
+ * would fail a test rather than pass quietly. This is that change.
  */
-describe('a spawn that cannot provision a body is refused, and the child exists anyway', () => {
-  it('tells the parent its spawn failed while leaving a whole child behind', async () => {
-    const run = await aRun({ onFailure: null });
-    runs.push(run);
-
-    const driver = run.driver;
+describe('a spawn is answered with the child’s id even where the child gets no body', () => {
+  /** A driver that cannot provision the agents named, and provisions every other one. */
+  function withoutBodiesFor(driver: TestDriver, ...bodiless: string[]): void {
     const create = driver.create.bind(driver);
     driver.create = async (request: SandboxRequest): Promise<Sandbox> => {
-      if (request.id === 'a-1') throw new SandboxError('the daemon went away.');
+      if (bodiless.includes(request.id)) throw new SandboxError('the daemon went away.');
       return create(request);
     };
+  }
 
+  /** A root that can spawn, over a driver that will not provision `a-1`. */
+  async function aParentWhoseFirstChildCannotBoot(): Promise<Run> {
+    const run = await aRun();
+    runs.push(run);
+    withoutBodiesFor(run.driver, 'a-1');
     await run.supervisor.add(aRecord({ id: 'a', parent: null, tools: ['spawn'] }), 'Begin.');
     const peer = run.driver.latest('a')!;
     await peer.until(() => peer.messages().length > 0);
+    return run;
+  }
+
+  it('answers with the id, and leaves the whole child and its opening behind', async () => {
+    const run = await aParentWhoseFirstChildCannotBoot();
 
     const first = await ask(run, 'a', 'spawn', { name: 'scout', charter: 'Look around.', opening: 'Begin.' });
 
-    // Refused — and the record, the parent link and the undelivered opening are all there.
-    expect(first.ok).toBe(false);
+    // What the spawn asked for, and what it got: a record, a parent link, and an opening
+    // queued for a child that is addressable whether or not anything is running it.
+    expect(first).toEqual({ ok: true, content: 'a-1' });
     expect(run.store.ids()).toEqual(['a', 'a-1']);
     expect(run.store.agent('a').children).toEqual(['a-1']);
     expect(run.store.agent('a-1').mailbox).toMatchObject([{ from: 'a', content: 'Begin.' }]);
+    expect(run.driver.all('a-1')).toEqual([]);
 
-    /**
-     * And the part that is genuinely surprising: the *next* spawn is refused too, with the
-     * first child's error. Settling walks every agent, so the child that cannot be
-     * provisioned is retried inside every later request and fails it — while the second
-     * child is created and linked exactly as asked. The parent is told twice that nothing
-     * happened and now has two children it will never address.
-     */
-    const second = await ask(run, 'a', 'spawn', { name: 'again', charter: 'Look again.' });
-    expect(second).toEqual(first);
+    // Not the supervisor's own trouble. `onFailure` is for what no agent can act on, and a
+    // child with no body is its parent's business.
+    expect(run.failures).toEqual([]);
+  });
+
+  /**
+   * The half that was genuinely surprising, inverted.
+   *
+   * Settling walks every agent, so a child that cannot be provisioned is retried inside
+   * every later request — and used to fail it, with the *first* child's error, while that
+   * request's own child was created and linked exactly as asked. A parent told twice that
+   * nothing happened would have accumulated two children it never addressed.
+   */
+  it('does not refuse the parent’s next request with the first child’s failure', async () => {
+    const run = await aParentWhoseFirstChildCannotBoot();
+    await ask(run, 'a', 'spawn', { name: 'scout', charter: 'Look around.', opening: 'Begin.' });
+
+    const second = await ask(run, 'a', 'spawn', { name: 'again', charter: 'Look again.', opening: 'Begin.' });
+
+    expect(second).toEqual({ ok: true, content: 'a-2' });
     expect(run.store.ids()).toEqual(['a', 'a-1', 'a-2']);
     expect(run.store.agent('a').children).toEqual(['a-1', 'a-2']);
     expect(run.store.record('a-2').charter).toBe('Look again.');
+
+    // And the second child, which can be provisioned, was: delivery to it was never
+    // abandoned on account of the sibling ordered before it in `ids()`.
+    const sibling = run.driver.latest('a-2')!;
+    await sibling.until(() => sibling.messages().length > 0, 'the second child being woken');
+    expect(sibling.messages()).toEqual(['[from a] Begin.']);
+  });
+
+  it('tells the parent its child has no body, once, rather than refusing anything', async () => {
+    const run = await aParentWhoseFirstChildCannotBoot();
+    await ask(run, 'a', 'spawn', { name: 'scout', charter: 'Look around.', opening: 'Begin.' });
+
+    // Queued for the parent rather than delivered, because the parent is mid-turn — the
+    // ordinary path a message to a working agent takes.
+    const [report] = run.store.agent('a').mailbox;
+    expect(report).toMatchObject({ from: 'a-1', substrate: true });
+    expect(report?.content).toContain('a-1 could not be given a body');
+    expect(report?.content).toContain('the daemon went away.');
+
+    // One outage, one message. The child is retried inside every later request, and the
+    // parent does not hear about each attempt.
+    await ask(run, 'a', 'spawn', { name: 'again', charter: 'Look again.' });
+    expect(run.store.agent('a').mailbox).toHaveLength(1);
   });
 });

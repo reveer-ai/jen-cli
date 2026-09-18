@@ -206,6 +206,23 @@ export class Supervisor {
   readonly #clock: () => number;
   readonly #bodies = new Map<string, Body>();
   /**
+   * The agents whose last attempt at a body threw, remembered rather than stored.
+   *
+   * It holds down the noise and nothing else: an outage is one message to a parent instead
+   * of one per request that settles during it. An id goes in when delivery to it throws and
+   * comes out the moment `#deliver` returns without throwing — including the early return,
+   * which means nothing is queued for it and so nothing is stuck.
+   *
+   * **Deliberately not a fourth status on the record.** In the store it would make
+   * "unreachable" something an agent *is*, which needs a way back out that nothing has asked
+   * for; here a supervisor that restarts earns the mark back by trying. Nothing branches on
+   * it but the report above and the stall read below.
+   *
+   * The stall read needs it independently: "has mail and no body" describes every dormant
+   * agent settling is about to wake, so only "we tried and it failed" picks out a stuck one.
+   */
+  readonly #unreachable = new Set<string>();
+  /**
    * Everything that changes state, one at a time.
    *
    * **Not a throughput concern — a correctness one.** Every transition here is read the
@@ -257,19 +274,26 @@ export class Supervisor {
   }
 
   /**
-   * Every agent waiting, and nothing pending anywhere.
+   * Every agent waiting, and nothing pending anywhere that can be delivered.
    *
    * **Residency is deliberately not part of this.** A timer only decides whether a body
    * stays up; it can never produce a message, so a stalled tree is stalled whether or not
    * one is armed, and waiting for timers to expire before saying so would delay the
    * diagnosis and change nothing about it.
+   *
+   * **Mail for an agent that cannot be reached is not work about to happen.** A pending
+   * message counts here on the grounds that delivery will wake somebody; where delivery is
+   * what failed, that grounds is gone, and counting it anyway reports a tree that has
+   * stopped as a tree that is working — the one outcome this read exists to prevent. So a
+   * marked agent's mailbox is read as empty, and this is the backstop for a parent that was
+   * told its child had no body and did nothing about it.
    */
   get stalled(): boolean {
     const live = this.#store.ids().filter((id) => this.#store.agent(id).state.status !== 'dismissed');
     if (live.length === 0) return false;
     return live.every((id) => {
       const agent = this.#store.agent(id);
-      return agent.state.status === 'waiting' && agent.mailbox.length === 0;
+      return agent.state.status === 'waiting' && (agent.mailbox.length === 0 || this.#unreachable.has(id));
     });
   }
 
@@ -334,12 +358,31 @@ export class Supervisor {
 
   async #resume(): Promise<void> {
     await this.#driver.destroyAll();
+    const failed: { id: string; error: unknown }[] = [];
     for (const id of this.#store.ids()) {
       // `working` is the whole of the question: the agent was mid-turn when its supervisor
       // went, so it owes the model a step whether its log ends in a call nobody answered or
       // in a step whose end nobody heard.
-      if (this.#store.agent(id).state.status === 'working') await this.#boot(id, true);
+      if (this.#store.agent(id).state.status !== 'working') continue;
+      try {
+        await this.#boot(id, true);
+      } catch (error) {
+        // Same rule as settling: one agent that cannot be provisioned must not abort the
+        // rescue of every agent after it in `ids()`.
+        //
+        // **And its stored state is left exactly as it was**, which is what makes `resume()`
+        // idempotent over it: fix the daemon, call it again, and it boots from the transcript
+        // it stopped at with nothing lost and nothing repeated. It cannot borrow settling's
+        // retry — a `working` agent has nothing queued, so no later settle has anything to
+        // try. Setting it back to `waiting` so that delivery would retry it was the
+        // alternative, and it is wrong: a `working` agent is owed a step, and the next
+        // message would reach it as a fresh turn on a log that ends mid-step.
+        failed.push({ id, error });
+      }
     }
+    // After the loop, for the reason `#settle` posts after its walk: a parent ordered before
+    // its failing child would otherwise take the report into a mailbox already passed.
+    for (const { id, error } of failed) await this.#unprovisioned(id, error);
     await this.#settle();
   }
 
@@ -738,8 +781,9 @@ export class Supervisor {
    * trusted. So the fields, the tool subset and the model identifier are all read again here
    * — and every one of those refusals happens **before** anything is stored, so a spawn
    * refused for what it *said* leaves no record, no parent link and no sandbox behind. A
-   * spawn that fails while provisioning the child's body is not that, and the difference
-   * bites: see `AGENTS.md` beside this file.
+   * spawn that fails while provisioning the child's body is the opposite shape — everything
+   * was written, so it is answered with the child's id and the body is reported to the
+   * parent: see `AGENTS.md` beside this file.
    *
    * The caller's *grant* is not among them any more. It is read at `#request` for every kind
    * at once, above anything that writes, which is the same guarantee held in one place.
@@ -946,9 +990,80 @@ export class Supervisor {
     await this.#store.save(to, { ...agent, mailbox: [...agent.mailbox, message] });
   }
 
-  /** Deliver whatever can be delivered, then say whether the tree can still move. */
+  /**
+   * A body that could not be provisioned, told to the agent's parent.
+   *
+   * **The same destination and the same shape `#ended` uses**, because from the parent's
+   * side it is the same fact: a child that is not going to speak. Turning it into input is
+   * what lets the parent's weights choose between retrying, replacing, escalating and giving
+   * up — the choice `#ended` already declines to make, and this has no more business making
+   * it. `#post(null, …)` carries a root's out to the human, so the agent nobody spawned
+   * needs no special path.
+   *
+   * **Not `onFailure`.** That hook is for what no agent can act on — a store that could not
+   * be written, a channel that broke. A child with no body is its parent's business.
+   *
+   * **The wording is load-bearing on both sides.** It cannot be read as a death: the agent
+   * never started, has not ended, and is still addressable, and a parent that believed
+   * otherwise would replace a child that is about to wake up fine. And it cannot be read as
+   * a loss: what was queued is still queued, and a parent whose fair reading was "my message
+   * did not arrive" would send it again, waking the child to two copies of its instruction.
+   */
+  async #unprovisioned(id: string, error: unknown): Promise<void> {
+    const said = error instanceof Error ? error.message : String(error);
+    await this.#post(this.#store.agent(id).parent, {
+      from: id,
+      substrate: true,
+      content:
+        `${id} could not be given a body: ${said}. It has not started and has not ended, and it ` +
+        `is still addressable. Anything queued for it is still queued and will be delivered when ` +
+        `it can be provisioned again.`,
+    });
+  }
+
+  /**
+   * Deliver whatever can be delivered, then say whether the tree can still move.
+   *
+   * **A failure belongs to the agent it happened to and to nobody else.** `#deliver`
+   * rethrows when it cannot boot a body — deliberately, having put the mailbox back exactly
+   * as it found it — and this loop is what eight call sites end in. Letting that throw
+   * through would fail whichever agent's request happened to be in flight, about whichever
+   * agent it happened to be about, and would abandon delivery to every agent ordered after
+   * the failing one in `ids()`. So each agent is attempted, each failure is caught, and the
+   * pass finishes.
+   *
+   * **Reports are posted after the walk, never during it.** A report goes into a parent's
+   * mailbox, and a parent that comes before its failing child in `ids()` would take it into
+   * a mailbox this pass has already gone past — so it would wait for some unrelated later
+   * request, or, if the run went quiet, for nothing. Posting after and walking again is what
+   * delivers it now.
+   *
+   * **The repeat terminates.** An agent produces at most one report per settle, whatever the
+   * driver does between passes, so each pass has strictly fewer agents left that can cause
+   * another one and the loop is bounded by the size of the run.
+   */
   async #settle(): Promise<void> {
-    for (const id of this.#store.ids()) await this.#deliver(id);
+    const told = new Set<string>();
+    for (;;) {
+      const failed: { id: string; error: unknown }[] = [];
+      for (const id of this.#store.ids()) {
+        try {
+          await this.#deliver(id);
+          // Including `#deliver`'s early return, which means nothing was queued — so
+          // nothing is stuck, and an agent that is reached again is reportable again.
+          this.#unreachable.delete(id);
+        } catch (error) {
+          if (!this.#unreachable.has(id) && !told.has(id)) failed.push({ id, error });
+          this.#unreachable.add(id);
+        }
+      }
+
+      if (failed.length === 0) break;
+      for (const { id, error } of failed) {
+        told.add(id);
+        await this.#unprovisioned(id, error);
+      }
+    }
 
     if (!this.stalled) {
       this.#reported = false;

@@ -110,33 +110,90 @@ stops being a corner.** The fix is to answer the call the stored state names rat
 last one in the log, which means `state.json` carrying the request it suspended on — the same
 answer as everything else here: store it, do not infer it.
 
-## A spawn that cannot provision a body is refused, and the child exists anyway
+## A request is answered by its own outcome, and a missing body is the parent's news
 
-**`#spawning` refuses nothing after it has written anything, and that reads as a guarantee it
-is not.** Every validation refusal — a missing charter, a widening tool, a model that is not an
-identifier — happens before `#add`, so nothing is created. A failure *provisioning the child's
-body* is the opposite shape and it is reachable in ordinary operation, because a daemon can go
-away between one request and the next.
+**Everything about this hangs on `#settle` being what every request ends with.** Eight call
+sites reach it — `add`, `tell`, `resume`, a turn, `#awaiting`, `#sending`, `#spawning`,
+`#stopping` — and it walks every agent. So anything that loop does to one agent, it does
+inside every other agent's request.
 
-What happens today, confirmed by driving it rather than by reading:
+`#deliver` rethrows when it cannot boot a body. **That is load-bearing and it stays**: the
+message leaves the mailbox before the boot and the boot is what consumes it, so it puts the
+mailbox back exactly and rethrows, and without that a daemon that blinked would cost a
+human's instruction or a child's whole turn. What ENG-214 changed is the caller, not that.
 
-- `#add` writes the record and the parent link, posts the opening, and then settles. A
-  creation that throws inside that settle propagates out through `#add`, out of `#spawning`,
-  and is turned into an `ok: false` answer by `#listen` — which names the *sandbox* error.
-- So the parent is told its spawn failed, and a complete dormant child is sitting in the store
-  with its opening still in its mailbox.
-- **And every later spawn by that parent is refused with the same error.** `#settle` walks
-  every agent, so the unprovisionable child is retried inside the next request and fails it —
-  while that request's *own* child is created and linked exactly as asked. Two requests, two
-  refusals, two children the parent does not know it has.
+Three rules, and each of them is a trap if you only remember the first:
 
-Nothing here is new to ENG-197; it is a property of `#settle` being what every request ends
-with. ENG-197 is only the change that first made `spawn` reachable by an agent, which is what
-turns it from a shape in the code into something a tree can actually do. It is left rather than
-fixed because the fix is a decision about what a supervisor owes a caller when settling fails,
-and that answer has to be the same for `send`, `tell` and a turn as it is for `spawn` —
-narrowing it to `spawn` would make the four disagree. `spawn.test.ts` states the behaviour so a
-deliberate change to it fails a test rather than passing quietly.
+- **The walk catches per agent and finishes.** One agent that cannot be provisioned costs
+  that agent's delivery and nothing else. It used to throw out of the loop, which failed
+  whichever request was in flight — a parent was told its `a-2` spawn failed because `a-1`
+  had no body — and abandoned delivery to every agent ordered after the failing one in
+  `ids()`.
+
+- **A request is answered by what it asked for.** `spawn` answers with the child's id
+  because the record and the parent link are written; `send` answers `delivered` because the
+  message is in the mailbox. Neither ever claimed a body existed, so neither becomes a
+  refusal when settling could not provide one. With `#settle` no longer throwing,
+  `#listen`'s `ok: false` path is reached only by a request that was itself bad, which is
+  what it was written for.
+
+- **Reports are posted after the walk and never during it**, and the walk runs again if any
+  were. This is the part that looks like needless ceremony and is not: a report goes into a
+  parent's mailbox, and a parent that comes *before* its failing child in `ids()` would take
+  it into a mailbox the pass has already gone past — so it would sit there until some
+  unrelated later request came along, or, in a run that then went quiet, forever.
+
+### `#unreachable` is memory, and the stall read needs it as much as the report does
+
+A `Set<string>` on the supervisor, not a field on the record. An id goes in when delivery to
+it throws and comes out the moment `#deliver` returns without throwing — **including the
+early return**, which means nothing is queued and so nothing is stuck.
+
+In the store it would be a fourth status, which makes "unreachable" something an agent *is*
+and needs a way back out that nothing has asked for. Here a restarted supervisor earns the
+mark back by trying, which is right: its parent has just been rebooted along with everything
+else.
+
+It holds down noise — one message to a parent per outage rather than one per request that
+settles during it — but **the stalled getter needs it for a separate reason**. "Has mail and
+no body" describes every dormant agent settling is about to wake; only "we tried and it
+failed" picks out a stuck one. So a marked agent's mailbox reads as empty there, and a tree
+stopped by an agent nobody can provision says so instead of looking like a working one.
+
+### The report cannot be `#ended`'s wording, and cannot be `onFailure`
+
+It goes to the agent's parent as a substrate-marked message through `#post`, so a root's
+reaches the human with no special case. Two readings would each do harm and the wording
+rules both out explicitly:
+
+- **Not a death.** The agent never started, has not ended, and is still addressable. A
+  parent that read `terminated` would replace a child that is about to wake up fine.
+- **Not a loss.** What was queued is still queued and will be retried. A parent that
+  concluded its message had gone would send it again, waking the child to two copies of its
+  instruction.
+
+`onFailure` is for the supervisor's own trouble — a store that could not be written, a
+channel that broke — which is to say what no agent can act on. A child with no body is
+something its parent can act on, and choosing between retry, replace, escalate and give up
+is the parent's, exactly as it already is for `#ended`.
+
+### `resume` has the same shape and cannot borrow the retry
+
+`#resume`'s boot loop catches per agent for the same reason, and reports by the same path.
+But its agents are `working` rather than waiting on mail, so **nothing is queued for a later
+settle to try again** — the recovery is repeated by calling `resume()` again, which is why a
+failed agent's stored state is left exactly as it was.
+
+Setting those agents back to `waiting` so ordinary delivery would retry them is the obvious
+move and it is wrong: a `working` agent is owed a step, and the next message would reach it
+as a fresh turn on a log that ends mid-step.
+
+### There is no bound on the retry, deliberately
+
+A dead daemon means one failing `create` per agent with mail, on every settle. A backoff, an
+attempt ceiling, or an unreachable state to park an agent in would each be policy in code,
+which is what this component exists to keep out. Whether the cost is real is a question for
+ENG-199's run rather than for a constant in this file.
 
 ## The sweep ends bodies and must never take a workspace
 
@@ -283,6 +340,11 @@ A request frame that fails is answered to the agent that made it — a result it
 on. **An event or a turn frame has no such answer**: there is no id to attach a refusal to, and
 the agent asked for nothing. What reaches there from one is the supervisor's own trouble, so it
 goes to `onFailure` (standard error by default) and the channel carries on.
+
+**Narrower than it used to be.** A body that could not be provisioned reached here too, and
+no longer does — it is the agent's parent's business now, and settling catches it before it
+gets this far. What is left is a store that could not be written and a channel that broke:
+the things no agent can act on, which is what this destination was always for.
 
 It is not tidiness. `#listen` is started as `void`, so a rejection escaping it is an unhandled
 rejection, and under Node's default that ends this process — the one process holding every
