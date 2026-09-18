@@ -454,3 +454,32 @@ root whose message went to an `onMessage` nobody is reading, which is the more l
 while the interface is a line on standard error. It is the *caller* that has to tell the two
 apart, and it can: the report names who is waiting, and a root among them means ask the person.
 Whoever builds the interface this section says is still undecided owns that distinction.
+
+### What the unbounded retry costs, measured
+
+The question the section above defers to ENG-199's run, answered by that run. Measured
+against a driver pointed at a `docker` that does not exist, with every agent in the tree
+holding mail it cannot be woken for:
+
+| tree | attempts while building it | attempts idle for 3s | one settle afterwards |
+|---|---|---|---|
+| 10 agents | 110, over 1.4s | **0** | 10 attempts, 138ms |
+| 30 agents | 930, over 11.4s | **0** | 30 attempts, 378ms |
+
+**Nothing happens while nothing happens**, which is the half that decides it. There is no
+timer anywhere here: `#settle` runs on `add`, `tell`, a turn ending, an `await`, a `send`, a
+`stop`, a body ending, and `resume()`, and on nothing else. A tree that has stopped against a
+dead daemon costs exactly zero until somebody does something. So there is no hot loop to
+bound, and a backoff would be a constant slowing down a thing that is not running.
+
+The cost per event is one failing `create` per agent with mail — about 13ms each, which is
+what a process that cannot be started costs — and the one number worth knowing is the
+**doubling**, which belongs to the settle loop rather than to the retry. A pass that produces
+a new report walks the tree again after posting it, so a settle over a *newly* unreachable
+tree costs two attempts per agent rather than one. Building a tree of 30 that way is
+2 × (1+…+30) attempts, quadratic in the size of the tree, and it is paid while a person is
+watching a tree fail to start rather than in the background.
+
+None of that is a reason for an attempt ceiling or an unreachable state to park an agent in,
+and both would still be policy in code. If this ever does need bounding, the thing to bound
+is the second walk — which is a settle question and not a retry one.
