@@ -1,0 +1,25 @@
+# What must not enter the build context.
+#
+# `node_modules` is the one that matters. The substrate's dependencies are installed inside
+# the image from its own lockfile, and a local tree — built on whatever platform the person
+# is sitting at — would be copied over them, so an image built on a Mac would carry that
+# Mac's native binaries. It is also by far the largest thing here, and the context is sent
+# to the daemon in full on every build.
+#
+# The suite and its support are excluded because the image carries the substrate rather
+# than its tests. Nothing the entry point imports is under any of these.
+#
+# **`operator.ts` is deliberately not excluded**, even though nothing inside a sandbox runs
+# it: it is declared in `bin`, and `npm link` creates a symbolic link for every name there
+# whether or not the file exists. Excluding it would leave a dangling `jen-operator` in
+# every agent's environment — a command that is present and cannot run, which is the exact
+# shape the build check below exists to catch in the other entry point.
+node_modules
+**/*.test.ts
+fixture.ts
+gateway.ts
+supervisor/harness.ts
+
+# Neither of these is read from inside the image.
+Dockerfile
+.dockerignore
