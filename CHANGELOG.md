@@ -1,5 +1,15 @@
 # @reveer/jen
 
+## 0.5.1
+
+### Patch Changes
+
+- [#30](https://github.com/reveer-ai/jen-cli/pull/30) [`755c494`](https://github.com/reveer-ai/jen-cli/commit/755c49480150543fbc9ba313e158c4af9e393b1c) Thanks [@joshtgi](https://github.com/joshtgi)! - The repository is now `reveer-ai/jen-cli`. The package is still `@reveer/jen` and the binary is still `jen` — only the repository moved, so nothing about installing or running jen changes.
+
+  `repository.url` in the manifest tracks the new name. That field is what `npm publish --provenance` attests against the workflow's own repository, so it is not cosmetic metadata: left stale it is a mismatch at publish time rather than a wrong link on the registry page.
+
+  GitHub redirects the old repository URL, so existing clones, links and the git remote keep working — but a redirect is a courtesy, not a binding, and anything that matched the old name exactly does not follow it. The npm trusted-publisher entry is the one that matters: it names owner, repository, workflow and environment, and a repository that no longer matches fails the OIDC exchange as a 404 naming the package.
+
 ## 0.5.0
 
 ### Minor Changes
