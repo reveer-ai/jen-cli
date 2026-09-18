@@ -56,6 +56,44 @@ export class SupervisorError extends Error {
 }
 
 /**
+ * What a failure to give an agent a body is reported as, and the whole of how settling tells
+ * that failure from any other.
+ *
+ * **Settling catches this and nothing else**, so the class boundary is load-bearing: what it
+ * covers becomes a message to the agent's parent, and what it does not keeps the exit it
+ * always had — out through `#settle` to the request in flight, or to `onFailure` from a frame
+ * that has no request to fail into. A store that could not be written is the supervisor's own
+ * trouble whether or not it happened to fail underneath a boot, and a parent told `<id> could
+ * not be given a body: the store is gone` would be handed a judgment — retry, replace,
+ * escalate — about a machine it has no reach into.
+ *
+ * **It is applied at the seam that knows**, around the driver's own calls in `#boot`, rather
+ * than sniffed for by the catch. Sniffing asks the error what it is; `#boot` knows which call
+ * it made. The difference shows the first time a driver throws something it did not construct
+ * itself, or a store starts throwing something that looks driver-shaped.
+ */
+export class UnprovisionedError extends Error {
+  constructor(message: string, options?: { cause?: unknown }) {
+    super(message, options);
+    this.name = 'UnprovisionedError';
+  }
+}
+
+/**
+ * Run the driver's part of a boot, and mark whatever comes out of it.
+ *
+ * The message is carried through unchanged because it is what the agent's parent is told, and
+ * the original is kept as `cause` for whoever is reading a log rather than a mailbox.
+ */
+async function provisioning<T>(what: () => Promise<T>): Promise<T> {
+  try {
+    return await what();
+  } catch (error) {
+    throw new UnprovisionedError(error instanceof Error ? error.message : String(error), { cause: error });
+  }
+}
+
+/**
  * How the substrate's own words are marked where an agent reads them.
  *
  * The flag on the message is the structural half and this is the half the model sees. Both
@@ -206,12 +244,16 @@ export class Supervisor {
   readonly #clock: () => number;
   readonly #bodies = new Map<string, Body>();
   /**
-   * The agents whose last attempt at a body threw, remembered rather than stored.
+   * The agents whose last attempt at a body failed to provision one, remembered rather than
+   * stored.
    *
    * It holds down the noise and nothing else: an outage is one message to a parent instead
-   * of one per request that settles during it. An id goes in when delivery to it throws and
-   * comes out the moment `#deliver` returns without throwing — including the early return,
-   * which means nothing is queued for it and so nothing is stuck.
+   * of one per request that settles during it. An id goes in when delivery to it throws an
+   * {@link UnprovisionedError} and comes out the moment `#deliver` returns without throwing
+   * — including the early return, which means nothing is queued for it and so nothing is
+   * stuck. Delivery that failed some other way marks nothing, because what the mark means to
+   * the stall read below is "no body and no way to get one", which a store that could not be
+   * written is not a report of.
    *
    * **Deliberately not a fourth status on the record.** In the store it would make
    * "unreachable" something an agent *is*, which needs a way back out that nothing has asked
@@ -367,8 +409,11 @@ export class Supervisor {
       try {
         await this.#boot(id, true);
       } catch (error) {
-        // Same rule as settling: one agent that cannot be provisioned must not abort the
-        // rescue of every agent after it in `ids()`.
+        // Same rule as settling, including its limit: one agent that cannot be provisioned
+        // must not abort the rescue of every agent after it in `ids()`, and a store that
+        // could not be read is not that — a recovery running over a store it cannot read has
+        // nothing to recover and should say so where it is heard.
+        if (!(error instanceof UnprovisionedError)) throw error;
         //
         // **And its stored state is left exactly as it was**, which is what makes `resume()`
         // idempotent over it: fix the daemon, call it again, and it boots from the transcript
@@ -439,17 +484,26 @@ export class Supervisor {
    */
   async #boot(id: string, owed: boolean): Promise<Body> {
     const record = this.#store.record(id);
-    const sandbox = await this.#driver.create({
-      id: record.id,
-      environment: record.environment,
-      workspace: record.workspace,
-      credentials: record.credentials,
-    });
+    // **The two driver calls are marked and the store read between them is not**, which is
+    // the line settling catches on — see {@link UnprovisionedError}. Both of these are the
+    // machine failing to hand over a body, which is the agent's parent's business; the
+    // transcript read is this supervisor's own trouble and leaves by its own route, the same
+    // one it left by before settling caught anything at all.
+    const sandbox = await provisioning(() =>
+      this.#driver.create({
+        id: record.id,
+        environment: record.environment,
+        workspace: record.workspace,
+        credentials: record.credentials,
+      }),
+    );
 
     const events = await this.#store.transcript(id);
-    const started = await sandbox.exec(this.#command, {
-      input: `${JSON.stringify({ record, events, owed })}\n`,
-    });
+    const started = await provisioning(() =>
+      sandbox.exec(this.#command, {
+        input: `${JSON.stringify({ record, events, owed })}\n`,
+      }),
+    );
 
     const body: Body = { sandbox, process: started };
     this.#bodies.set(id, body);
@@ -1029,8 +1083,13 @@ export class Supervisor {
    * as it found it — and this loop is what eight call sites end in. Letting that throw
    * through would fail whichever agent's request happened to be in flight, about whichever
    * agent it happened to be about, and would abandon delivery to every agent ordered after
-   * the failing one in `ids()`. So each agent is attempted, each failure is caught, and the
-   * pass finishes.
+   * the failing one in `ids()`. So each agent is attempted, every {@link UnprovisionedError}
+   * is caught, and the pass finishes.
+   *
+   * **Every other failure still leaves through here**, unchanged and on purpose. The problem
+   * above is that one agent's missing body is not another agent's business; a store this
+   * supervisor cannot write is every agent's business at once, and it belongs to the human
+   * the moment it happens rather than to a parent's next judgment call.
    *
    * **Reports are posted after the walk, never during it.** A report goes into a parent's
    * mailbox, and a parent that comes before its failing child in `ids()` would take it into
@@ -1053,6 +1112,14 @@ export class Supervisor {
           // nothing is stuck, and an agent that is reached again is reportable again.
           this.#unreachable.delete(id);
         } catch (error) {
+          // **Only a missing body is caught here.** Everything else `#deliver` can throw is
+          // the supervisor's own trouble and keeps the exit it had before this loop learned
+          // to catch: out to the request in flight, or to `onFailure` from a frame with no
+          // request to fail into. Swallowing it would relabel a store that cannot be written
+          // as a body that cannot be provisioned — reported to a parent that can do nothing
+          // about it, counted as unreachable by the stall read, and never heard by the hook
+          // whose whole remit it is. The report loop below is unwrapped for the same reason.
+          if (!(error instanceof UnprovisionedError)) throw error;
           if (!this.#unreachable.has(id) && !told.has(id)) failed.push({ id, error });
           this.#unreachable.add(id);
         }

@@ -13,6 +13,7 @@ import { aRecord } from '../fixture.ts';
 import { INTERRUPTED } from '../runtime/events.ts';
 import { aRun, TestDriver, until, untilStored, type Run } from './double.ts';
 import { SandboxError } from '../sandbox/index.ts';
+import { StoreError } from './store.ts';
 import { SUBSTRATE } from './index.ts';
 
 import type { Event } from '../runtime/events.ts';
@@ -523,6 +524,84 @@ describe('an agent whose body cannot be provisioned is reported to its parent', 
     parent.ask('a:1', 'send', { to: 'a-1', content: 'One more thing.' });
     await until(() => reportsTo(run, 'a').length === 2, 'the second episode being reported');
     expect(parent.answers().get('a:1')).toEqual({ ok: true, content: 'delivered to a-1' });
+  });
+
+  /**
+   * **The boundary of what settling catches, which is one class and not "a boot went
+   * wrong".**
+   *
+   * `#deliver` reaches the store three times on the way to a body — the `save` that takes
+   * the message out of the mailbox, `#answerInLog`'s read, and the `transcript` read inside
+   * `#boot` — and a bare catch in the settling loop takes all three. What comes out of it
+   * then is a parent told `<id> could not be given a body: the store is gone`: a claim about
+   * the machine, handed to the one party with no reach into it, and an invitation to retry
+   * or replace a child that is not the thing that is broken. The id would be marked
+   * unreachable with it, so the stall read would discount its mail, and `onFailure` — whose
+   * whole remit this is — would never hear about it at all.
+   *
+   * So the catch is typed and the type is applied in `#boot`, around the driver's own calls
+   * and nothing else. These two drive the two store reads on either side of it.
+   */
+  it('lets a store failure under a boot leave by its own route, not as a missing body', async () => {
+    const run = await aRun();
+    runs.push(run);
+    await run.supervisor.add(aRecord({ id: 'a', parent: null, tools: [] }), 'Begin.');
+    const root = run.driver.latest('a')!;
+    await root.until(() => root.messages().length > 0);
+    root.answered('nothing to report');
+    await until(() => root.destroyed, 'the root going dormant');
+
+    // The daemon is fine. It is `#boot`'s own transcript read that is not.
+    const transcript = run.store.transcript.bind(run.store);
+    run.store.transcript = async () => {
+      throw new StoreError('the store is gone');
+    };
+
+    // The request in flight is refused with what actually happened, which is where a store
+    // failure went before settling learned to catch anything.
+    await expect(run.supervisor.tell('Another thing.')).rejects.toThrow('the store is gone');
+    expect(run.toHuman.filter((message) => message.substrate === true)).toEqual([]);
+    expect(run.failures).toEqual([]);
+
+    // And nothing was marked: "unreachable" means no body and no way to get one, which is
+    // not what a store that cannot be read is a report of. So the pending message still
+    // counts as work about to happen.
+    expect(run.supervisor.stalled).toBe(false);
+    expect(run.store.agent('a').mailbox).toEqual([{ from: null, content: 'Another thing.' }]);
+
+    // The message survived the failure exactly as a failed boot leaves it, so the next
+    // attempt is an ordinary delivery.
+    run.store.transcript = transcript;
+    await run.supervisor.tell('And another.');
+    const woken = run.driver.latest('a')!;
+    await woken.until(() => woken.messages().length > 0, 'the held message landing');
+    expect(woken.messages()).toEqual(['[from the human] Another thing.']);
+  });
+
+  it('carries a store failure with no request behind it to onFailure', async () => {
+    const run = await aPair();
+    const parent = run.driver.latest('a')!;
+    const child = run.driver.latest('a-1')!;
+    await child.until(() => child.messages().length > 0);
+
+    // The parent goes dormant awaiting its child, so delivering the child's report means
+    // writing the answer into the parent's log — and reading that log is what fails.
+    parent.ask('a:1', 'await', {}, 0);
+    await until(() => parent.destroyed, 'the parent being torn down');
+    run.store.transcript = async () => {
+      throw new StoreError('the store is gone');
+    };
+
+    // A turn frame has no request id to fail into, so this is the path that used to become
+    // an unhandled rejection and end the process holding every agent in the run.
+    child.answered('here is my report');
+    await until(() => run.failures.length > 0, 'the failure reaching the hook');
+
+    expect(run.failures[0]?.agent).toBe('a-1');
+    expect((run.failures[0]?.error as Error).message).toBe('the store is gone');
+    // Not the parent's business and never dressed up as one.
+    expect(reportsTo(run, 'a')).toEqual([]);
+    expect(run.toHuman.filter((message) => message.substrate === true)).toEqual([]);
   });
 
   it('reports a root that cannot be provisioned to the human', async () => {

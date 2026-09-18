@@ -37,3 +37,9 @@
 
 - [x] 6.1 Run the substrate's typecheck, lint and build, then the full suite as a regression net.
 - [x] 6.2 Replace the `agent/supervisor/AGENTS.md` section "A spawn that cannot provision a body is refused, and the child exists anyway" with what is true after this change — rewritten rather than deleted, so the next reader of that code finds what was chosen and why.
+
+## 7. Review: the catch is one class, not "a boot went wrong"
+
+- [x] 7.1 Give the failure to provision a body its own type and construct it at the seam that knows which call threw — around the driver's own two calls in `#boot`, and nothing else. `#deliver`'s `#store.save`, `#answerInLog`'s read and `#boot`'s own transcript read stay outside it.
+- [x] 7.2 Catch only that type in `#settle` and in `#resume`'s boot loop, and rethrow everything else, so a store that could not be written keeps the exit it had before settling learned to catch — out to the request in flight, or to `onFailure` from a frame with no request to fail into.
+- [x] 7.3 Pin both store reads on either side of the driver's calls: one refused to the request in flight with nothing marked unreachable and no report to any parent, one reaching `onFailure` from a turn frame.

@@ -341,10 +341,20 @@ on. **An event or a turn frame has no such answer**: there is no id to attach a 
 the agent asked for nothing. What reaches there from one is the supervisor's own trouble, so it
 goes to `onFailure` (standard error by default) and the channel carries on.
 
-**Narrower than it used to be.** A body that could not be provisioned reached here too, and
-no longer does — it is the agent's parent's business now, and settling catches it before it
-gets this far. What is left is a store that could not be written and a channel that broke:
-the things no agent can act on, which is what this destination was always for.
+**Narrower than it used to be, and narrower by exactly one class.** A body that could not be
+provisioned reached here too, and no longer does — it is the agent's parent's business now,
+and settling catches it before it gets this far. What is left is a store that could not be
+written and a channel that broke: the things no agent can act on, which is what this
+destination was always for.
+
+**That sentence is only true because the catch is typed.** `#settle` catches
+`UnprovisionedError` and rethrows everything else, and `#boot` constructs one around the
+driver's own two calls and nothing else — so the `#store.transcript` read between them, and
+the `#store.save` that `#deliver` makes before it ever reaches a boot, still arrive here. A
+catch written as a bare `catch` in that loop reads as the same change and is not: a failed
+write would come out of it as `<id> could not be given a body: …`, posted to a parent that
+has no reach into the machine, marked unreachable so the stall read discounts its mail, and
+never heard by this hook at all. If the typed catch ever goes, this paragraph goes with it.
 
 It is not tidiness. `#listen` is started as `void`, so a rejection escaping it is an unhandled
 rejection, and under Node's default that ends this process — the one process holding every
