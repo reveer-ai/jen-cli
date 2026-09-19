@@ -699,7 +699,7 @@ export class Supervisor {
   }
 
   /**
-   * The ordinary suspension, and the only one that delivers afterwards.
+   * The ordinary suspension, and the only one that asks for a delivery afterwards.
    *
    * {@link #suspend} puts back whatever the body never acknowledged and decides nothing
    * about it, because its other two callers want nothing done: a shutdown is ending the run
@@ -708,6 +708,11 @@ export class Supervisor {
    * take it. Nothing else would find that: delivery only happens in a settle, and `stalled`
    * counts held mail as a tree still moving, so `onStalled` would not fire either. The
    * window is a timer firing as a `tell` arrives — which is what a busy tree does.
+   *
+   * **Asks for, rather than performs.** This runs as a queued task, so a timer that fired
+   * while a shutdown was walking bodies lands behind it and reaches {@link #settle} over a
+   * closed run; the settle declines there, for the whole class of callers that can arrive
+   * late rather than for this one. Nothing here needs to know whether the run is still open.
    *
    * Nobody holds this promise, so a store that cannot be written leaves through
    * {@link #failed} rather than as an unhandled rejection ending the process every agent in
@@ -1185,8 +1190,31 @@ export class Supervisor {
    * **The repeat terminates.** An agent produces at most one report per settle, whatever the
    * driver does between passes, so each pass has strictly fewer agents left that can cause
    * another one and the loop is bounded by the size of the run.
+   *
+   * **A closing run delivers nothing, and that is held here rather than at the callers.**
+   * Every delivery goes through here — `#deliver` is reached from nowhere else — and a
+   * dormant agent is given a body in order to be delivered to, so this line is also what
+   * keeps a sandbox from outliving the run that created it.
+   *
+   * It has to be here because the callers are not one path: `#shutdown` runs on the serial
+   * queue, and every task already queued behind it still runs after it. A residency timer
+   * that has fired is past disarming; a frame read off a body's channel a moment before it
+   * was destroyed is already queued; `add()` and `tell()` queue from outside altogether.
+   * Each of those ends in a settle, over a store where the messages the shutdown just
+   * restored are at the head of `waiting` mailboxes — so each of them would take one and
+   * boot a fresh sandbox for an agent the run is done with. Guarding one caller would leave
+   * the rest, and there is no caller that wants a delivery after {@link shutdown}.
+   *
+   * `#closing` is never cleared: a supervisor that has shut down is finished, and a run is
+   * taken up again by constructing another one over the store — which is also why
+   * {@link resume} needs no guard of its own, although it is the one path that provisions
+   * without delivering. It is a caller deliberately taking a run up rather than work
+   * arriving late, and nothing that exists can queue it behind a shutdown: the operator arms
+   * its signal handlers before it, so an interrupt during a recovery queues the shutdown
+   * *after* the recovery rather than in front of it.
    */
   async #settle(): Promise<void> {
+    if (this.#closing) return;
     const told = new Set<string>();
     for (;;) {
       const failed: { id: string; error: unknown }[] = [];

@@ -250,6 +250,29 @@ calls `#add` and not `add` for exactly this reason.
 The store assumes one writer per run as a consequence, and `state.json.writing` is a single
 predictable name rather than a unique one because of it.
 
+### `#shutdown` is on this queue, and the queue outlives it
+
+Which is the part that catches you: **the ending is a task like any other, so everything
+already queued behind it still runs afterwards, over a run that is finished.** A residency
+timer that has fired is past `#disarm`; a frame read off a body's channel a moment before
+that body was destroyed is already in the queue; `add()` and `tell()` queue from outside the
+supervisor and know nothing about it. The shutdown's walk is a sync and a destroy per body —
+seconds each against a real daemon — so the window is wide by construction rather than a
+race you have to be unlucky to hit.
+
+What those late tasks find is the shutdown's *own* work. Every message it put back is at the
+head of a `waiting` agent's mailbox, so a settle from one of them reads a run with work to do
+and boots a fresh sandbox for an agent nobody is coming back to — a container outliving its
+run, through the action a person takes to stop for the day.
+
+`#closing` is the bound and `#settle` is where it is spent, once, rather than at each of the
+eight callers that end in one. **If you add a path that provisions without settling, it needs
+its own** — `resume` is the only one today, and it is exempt because it is a caller
+deliberately taking a run up rather than work arriving late. The corresponding trap when
+writing a test: a body destroyed inside `beforeDestroy` holds the whole walk, which is how
+both tests in `suspend.test.ts`'s closing-run block open this window on purpose instead of
+racing for it.
+
 ## One sandbox at a time per agent, assumed and unenforced
 
 `agent/AGENTS.md` records that two `create` calls for the *same* agent would each believe

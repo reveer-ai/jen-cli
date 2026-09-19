@@ -519,3 +519,122 @@ describe('a message handed to a body that never recorded it is not lost with the
     expect(run.store.agent('a').mailbox).toEqual([]);
   });
 });
+
+/**
+ * What a shutdown leaves behind is the last word, including for work already queued.
+ *
+ * `#shutdown` runs on the serial queue, and everything queued behind it still runs after it
+ * — over a store where the messages it just restored are at the head of `waiting` mailboxes.
+ * Anything that settles from there takes one and provisions a sandbox for an agent the run
+ * has finished with: a container outliving the shutdown, which is the clean-exit criterion
+ * ENG-199 asserts, failed by the action a person takes to stop for the day.
+ *
+ * **There is more than one way to be queued behind it**, which is why the guard is in
+ * `#settle` rather than at any caller. A residency timer that has already fired is past
+ * `#disarm`; a frame read off a body's channel a moment before that body was destroyed is
+ * already in the queue; `add()` and `tell()` queue from outside the supervisor altogether.
+ * One test below is the first of those and one is the second, and a guard on either caller
+ * alone leaves the other.
+ *
+ * Both are timed rather than raced: the shutdown is held open at the root's teardown, which
+ * is where the real window is — that loop is a sync and a destroy per body, seconds each
+ * against a real daemon.
+ */
+describe('a closing run starts nothing more', () => {
+  /**
+   * A root resident at a boundary holding a message it never acknowledged, and a child
+   * resident on a call. The root is the first body a shutdown reaches, so holding its
+   * teardown holds the whole walk.
+   */
+  async function aTreeAtRest(): Promise<{ run: Run; child: Peer; held: Promise<void>; release: () => void }> {
+    const run = await aRun();
+    runs.push(run);
+    await run.supervisor.add(aRecord({ id: 'a', parent: null, tools: ['spawn', 'await'] }), 'Begin.');
+    const root = run.driver.latest('a')!;
+    await root.until(() => root.messages().length === 1, 'its opening message');
+
+    root.ask('a:1', 'spawn', { name: 'scout', charter: 'Look around.', opening: 'Begin.', tools: ['await'] });
+    await root.until(() => root.answers().has('a:1'), 'the spawn being answered');
+    const child = run.driver.latest('a-1')!;
+    await child.until(() => child.messages().length === 1, "the child's opening message");
+
+    // Resident at a boundary, then told something — so the shutdown has a message to put
+    // back, which is what a late settle finds at the head of a `waiting` mailbox.
+    root.answered('Done.', 60_000);
+    await until(() => run.store.agent('a').state.status === 'waiting', 'the turn ending');
+    await run.supervisor.tell('One more thing.');
+    await root.until(() => root.messages().length === 2, 'the second message reaching the body');
+    expect(run.store.agent('a').mailbox).toEqual([]);
+
+    let reached: () => void;
+    const held = new Promise<void>((wake) => {
+      reached = wake;
+    });
+    let release: () => void;
+    const released = new Promise<void>((wake) => {
+      release = wake;
+    });
+    run.driver.beforeDestroy = async (agent) => {
+      if (agent !== 'a') return;
+      reached();
+      await released;
+    };
+
+    return { run, child, held, release: () => release() };
+  }
+
+  /**
+   * Everything the shutdown wrote, still true afterwards — and the root never provisioned a
+   * second time. Read after a pause because the queued task runs the moment the shutdown's
+   * own promise settles; without the guard it is well past `#deliver`'s first write by here.
+   */
+  async function unchangedByWhatRanAfter(run: Run): Promise<void> {
+    await new Promise<void>((wake) => setTimeout(wake, 100));
+
+    expect(run.driver.all('a')).toHaveLength(1);
+    expect(run.supervisor.resident).toEqual([]);
+    expect(run.store.agent('a').state).toEqual({ status: 'waiting', request: null });
+    expect(run.store.agent('a').mailbox.at(0)).toEqual({ from: null, content: 'One more thing.' });
+  }
+
+  it('declines the settle a residency that expired mid-shutdown asks for', async () => {
+    const { run, child, held, release } = await aTreeAtRest();
+
+    // Short enough to expire while the walk is held at the root above it.
+    child.ask('a-1:1', 'await', {}, 120);
+    await until(() => run.store.agent('a-1').state.status === 'waiting', 'the child suspending on its call');
+    // Both bodies live and the child's number still running, so the expiry the test is about
+    // is ahead of the shutdown rather than already behind it.
+    expect(run.supervisor.resident).toEqual(['a', 'a-1']);
+
+    const ended = run.supervisor.shutdown();
+    await held;
+    await new Promise<void>((wake) => setTimeout(wake, 300));
+    release();
+    await ended;
+
+    await unchangedByWhatRanAfter(run);
+  });
+
+  it('declines the settle a frame read just before the shutdown asks for', async () => {
+    const { run, child, held, release } = await aTreeAtRest();
+
+    const ended = run.supervisor.shutdown();
+    await held;
+    // Read off a live channel and queued behind the shutdown, which is the ordinary way a
+    // frame arrives late: this body has not been reached by the walk yet.
+    child.answered('Found it.');
+    await new Promise<void>((wake) => setTimeout(wake, 50));
+    release();
+    await ended;
+
+    await unchangedByWhatRanAfter(run);
+    // The frame was handled, and handled after the restore — so what the guard declined was
+    // a settle that really did run, rather than a frame that never arrived.
+    expect(run.store.agent('a-1').state.status).toBe('waiting');
+    expect(run.store.agent('a').mailbox).toEqual([
+      { from: null, content: 'One more thing.' },
+      { from: 'a-1', content: 'Found it.' },
+    ]);
+  });
+});
