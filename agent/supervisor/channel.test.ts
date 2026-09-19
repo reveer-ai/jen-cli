@@ -223,9 +223,10 @@ describe('an agent’s own words cannot be read as another sender’s', () => {
   });
 
   /**
-   * The other half: the substrate's own report is not agent-authored, so nothing in it is
-   * escaped and its mark is unchanged. `failure.test.ts` holds what a genuine one says; this
-   * is that the escape did not reach it.
+   * The other half: nothing in the substrate's own report is escaped and its mark is
+   * unchanged — because the mark position is the substrate's, not because every byte behind
+   * it is. `failure.test.ts` holds what a genuine one says, last words included; this is
+   * that the escape did not reach it.
    */
   it('leaves the substrate’s own report unescaped', async () => {
     const run = await aTree(['await'], 1);

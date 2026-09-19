@@ -350,9 +350,13 @@ and the mark is the whole of what tells them apart.
 **Agent-authored content is escaped into that position**: a leading `[` becomes `\[` before
 the mark is prepended. A child that opens its report with `[substrate] ...` — quoting a message
 it was itself sent, which is how a confused agent reaches this rather than a hostile one —
-would otherwise be read by its parent as a death. The substrate's own report is not
-agent-authored and is not escaped, which is why the escape is applied at `render()` rather than
-wherever a message is posted.
+would otherwise be read by its parent as a death. The substrate's own report is not escaped,
+which is why the escape is applied at `render()` rather than wherever a message is posted.
+
+**What makes that safe is the position, not the authorship.** A termination report carries the
+tail of the dead body's standard error, so part of it *is* agent-authored — but always behind
+`<id> terminated: `, and `unmarked` guards position 0 alone. Widening the escape past that
+position would have to revisit the unescaped branch in `render()` rather than keep it.
 
 **A mark-shaped string in the middle of a message is deliberately not escaped.** Escaping every
 occurrence mangles any message that legitimately discusses the substrate's output, including a

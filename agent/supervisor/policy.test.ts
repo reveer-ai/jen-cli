@@ -54,22 +54,30 @@ describe('the supervisor holds no period of its own', () => {
     expect(DECLARATIONS).not.toMatch(/\b\d+_\d+/);
     expect(DECLARATIONS).not.toMatch(/\b\d+\s*\*\s*\d+/);
 
-    // And a number long enough to *be* a count of milliseconds may appear in exactly one
-    // position: alone, as the whole of a named binding. `ms: 0` and a bound of `0` survive,
-    // which is the point — zero is the absence of a request rather than a period.
+    // And a number long enough to *be* a count of milliseconds is named here, one by one.
+    // `ms: 0` and a bound of `0` survive, which is the point — zero is the absence of a
+    // request rather than a period.
     //
-    // **The position is the whole of what this allows, and the name is still tested.** The
-    // test above reads every binding in this file and fails any whose name could be a
-    // period, so a `const KEEP_ALIVE_MS = 30000` is refused there and a byte bound on a
-    // buffer is not. What stays refused here is the shape a period actually takes when it
-    // is smuggled in: a literal passed to a timer, compared against a clock, or added to
-    // one. Widening this to "long numbers are fine" would give all of that away; it admits
-    // one position and one position only.
-    const bound = new RegExp(`^\\s*(?:const|let|var|readonly)\\s+#?[A-Za-z_][A-Za-z0-9_]*(?::[^=]+)?\\s*=\\s*\\d{3,};\\s*$`);
-    for (const line of DECLARATIONS.split('\n')) {
-      if (!/\b\d{3,}\b/.test(line)) continue;
-      expect(line, 'a number this long belongs alone in a named binding, or nowhere').toMatch(bound);
-    }
+    // **An allowlist rather than a rule about where a long number may sit.** A position rule
+    // — alone, as the whole of a named binding — reads as though the name test above closes
+    // the other half of the door, and it does not: that test matches a suffix list, and
+    // `RESIDENCY`, `KEEP`, `TTL`, `EXPIRY` and `LIFETIME` are none of them. `const RESIDENCY
+    // = 30000;` satisfies a position rule, passes the name test, and leaves `arms exactly
+    // one timer` untouched, because a default is applied at the call site and `setTimeout(…,
+    // keep)` reads the same either way. The three guards are locks on three different doors,
+    // so a position rule leaves this one with none.
+    //
+    // The property actually wanted was never "a long number may sit in a binding" — it is
+    // "there is one long number in this file and it is this one", which is what naming it
+    // says and nothing weaker does. Adding a second is then an edit to this list: the
+    // deliberate act the guard exists to force, in front of the person best placed to ask
+    // whether the new one is a bound or a period.
+    const long = DECLARATIONS.split('\n')
+      .map((line) => line.trim())
+      .filter((line) => /\b\d{3,}\b/.test(line));
+    expect(long, 'a long number in the supervisor is a period until this test says otherwise').toEqual([
+      'const SAID = 4096;',
+    ]);
   });
 
   it('arms exactly one timer, and never on a number of its own', () => {

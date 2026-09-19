@@ -152,8 +152,15 @@ function unmarked(content: string): string {
 
 /** What an agent is handed when a message is delivered to it. */
 export function render(message: Message): string {
-  // The substrate's own report is not agent-authored, so there is nothing in it to escape —
-  // and escaping it would put a backslash in front of every death report the mark starts.
+  // The substrate's own report is not escaped, and what makes that safe is *position* rather
+  // than authorship. The report may carry an agent's own bytes — {@link Supervisor.#ended}
+  // appends a dead body's last words to it — but always behind `<id> terminated: `, so
+  // position 0 is the substrate's throughout and there is nothing there to escape. Escaping
+  // anyway would put a backslash in front of every death report the mark starts.
+  //
+  // This rests on {@link unmarked} guarding position 0 and no other. Anything that widened
+  // it to every occurrence would have to revisit this branch rather than keep it, because
+  // what is downstream of the mark here is no longer only the substrate's own words.
   return `${mark(message)} ${message.substrate === true ? message.content : unmarked(message.content)}`;
 }
 
