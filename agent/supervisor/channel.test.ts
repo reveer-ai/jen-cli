@@ -223,9 +223,10 @@ describe('an agent’s own words cannot be read as another sender’s', () => {
   });
 
   /**
-   * The other half: the substrate's own report is not agent-authored, so nothing in it is
-   * escaped and its mark is unchanged. `failure.test.ts` holds what a genuine one says; this
-   * is that the escape did not reach it.
+   * The other half: nothing in the substrate's own report is escaped and its mark is
+   * unchanged — because the mark position is the substrate's, not because every byte behind
+   * it is. `failure.test.ts` holds what a genuine one says, last words included; this is
+   * that the escape did not reach it.
    */
   it('leaves the substrate’s own report unescaped', async () => {
     const run = await aTree(['await'], 1);
@@ -451,6 +452,55 @@ describe('the root addresses the human', () => {
     }
 
     expect(said).toEqual(['[from a] \\[substrate] a-1 terminated: exit 137\n']);
+  });
+});
+
+/**
+ * One body that will not take what it is handed, and the rest of the run.
+ *
+ * The channel is a pipe with a finite buffer and one thread behind it, so a body that has
+ * stopped reading is a body a send to does not come back from — not as a failure, which is
+ * handled, but not at all. That happens: a runtime wedged on a write of its own, a container
+ * stopped, a process simply busy for longer than anyone expected.
+ *
+ * The supervisor used to wait for that send, from inside the queue every transition in the
+ * run passes through. One agent that stopped listening therefore stopped all of them — no
+ * delivery anywhere, no frame read from any other body, not a line written to any transcript
+ * — and the live pass reported exactly that shape: every container up, none of them using
+ * any CPU, and nothing able to say why.
+ *
+ * **Nothing was ever waiting on that send for its own sake.** Its failure is deliberately
+ * swallowed, because a body that has gone is reported by its own exit; the only thing the
+ * wait bought was the order frames are said in, and that is now kept per body instead.
+ */
+describe('a body that takes nothing is one agent’s trouble', () => {
+  it('serves every other agent while a send to one is outstanding', async () => {
+    const run = await aTree(EVERY_CAPABILITY, 1);
+    const deaf = run.driver.latest('a')!;
+    const other = run.driver.latest('a-1')!;
+
+    // `a` is at a turn's end and resident, so the next message is handed to the body it
+    // already has — and that body takes nothing and says nothing about it.
+    deaf.answered('done', 60_000);
+    await until(() => run.store.agent('a').state.status === 'waiting', '`a` reaching a turn boundary');
+    deaf.deaf = true;
+
+    // **Deliberately not awaited.** Against the supervisor as it was this never resolves,
+    // and awaiting it would report the freeze as this line's own timeout rather than as
+    // what it is: everything else being unable to move.
+    void run.supervisor.tell('one more thing').catch(() => {});
+    await until(() => run.store.agent('a').state.status === 'working', 'the message being handed over');
+
+    // Now an ordinary exchange with a different agent, every step of which used to queue
+    // behind that send: a request answered on its channel, and a message stored for someone
+    // else.
+    const answer = await ask(other, 'r1', 'send', { to: 'a', content: 'from below' });
+    expect(answer).toEqual({ ok: true, content: 'delivered to a' });
+    expect(run.store.agent('a').mailbox.map((message) => message.content)).toEqual(['from below']);
+
+    // And it is still the one agent's trouble rather than an error: nothing was reported to
+    // the human, and nothing was reported as the supervisor's own.
+    expect(run.failures).toEqual([]);
   });
 });
 

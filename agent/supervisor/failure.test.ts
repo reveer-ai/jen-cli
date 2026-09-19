@@ -101,6 +101,43 @@ describe('an agent that ends without speaking is reported to its parent', () => 
     expect(parent.messages().at(-1)).toBe(`${SUBSTRATE} a-1 terminated: SIGKILL`);
   });
 
+  /**
+   * The exit says that a child stopped; this is the only thing that ever says why.
+   *
+   * A runtime that could not read what it was booted with writes one line and ends, and a
+   * runtime that failed mid-turn ends the same way — both on the stream the supervisor has
+   * to read anyway, because a stream nobody reads is one that fills and stops the process
+   * behind it. Having read it, throwing it away would leave a parent choosing between
+   * retrying, replacing and escalating on `exit 1`.
+   */
+  it('carries what the body said on its way out', async () => {
+    const run = await aPair();
+    const parent = run.driver.latest('a')!;
+    const child = run.driver.latest('a-1')!;
+    await parent.until(() => parent.messages().length > 0);
+
+    child.wrote('the boot frame could not be read: record.model.credential names "K"\n');
+    child.die({ code: 1, signal: null });
+    await until(() => run.store.agent('a').mailbox.length > 0, 'the report being posted');
+
+    const report = run.store.agent('a').mailbox[0]!.content;
+    expect(report).toContain('a-1 terminated: exit 1');
+    expect(report).toContain('record.model.credential names "K"');
+  });
+
+  /** And a body with nothing to say is reported exactly as it always was. */
+  it('claims nothing further for a body that said nothing', async () => {
+    const run = await aPair();
+    const parent = run.driver.latest('a')!;
+    const child = run.driver.latest('a-1')!;
+    await parent.until(() => parent.messages().length > 0);
+
+    child.die({ code: null, signal: 'SIGKILL' });
+    await until(() => run.store.agent('a').mailbox.length > 0, 'the report being posted');
+
+    expect(run.store.agent('a').mailbox[0]!.content).toBe('a-1 terminated: SIGKILL');
+  });
+
   it('reports nothing for an agent that spoke and then exited', async () => {
     const run = await aPair();
     const child = run.driver.latest('a-1')!;

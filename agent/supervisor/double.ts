@@ -49,8 +49,28 @@ export class Peer {
   /** Frames the supervisor sent that were not readable as frames. */
   readonly unreadable: string[] = [];
   destroyed = false;
+  /**
+   * Set where this body takes nothing that is sent to it, and never says so.
+   *
+   * **The one thing a real channel can do that objects cannot.** A body's input is a pipe
+   * with a finite buffer and one thread behind it, so a send to a body that has stopped
+   * reading does not come back — not as a failure, which the supervisor handles, but not at
+   * all. `send` here resolves the instant it is called, so nothing else in this file can
+   * ask what the supervisor does while one is outstanding, and the answer used to be that
+   * it did nothing for anybody.
+   */
+  deaf = false;
 
   readonly #out = new PassThrough();
+  /**
+   * The other stream a real process has.
+   *
+   * A field rather than a fresh one per access, because the supervisor keeps whatever it
+   * reads here and a test has to be able to put something in it. What it cannot model is
+   * the *pressure*: this accepts whatever is written whether or not anybody reads it, which
+   * is exactly why an unread stream is a thing only `containers.test.ts` can ask about.
+   */
+  readonly #said = new PassThrough();
   #woken: (() => void)[] = [];
   #ending!: (exit: Exit) => void;
   readonly #exit = new Promise<Exit>((resolve) => (this.#ending = resolve));
@@ -66,11 +86,12 @@ export class Peer {
     const stdin: Input = {
       send: async (text) => {
         if (this.destroyed) throw new SandboxError(`the sandbox of ${this.agent} is gone, so nothing was sent.`);
+        if (this.deaf) return new Promise<void>(() => {});
         this.#take(text);
       },
       end: async () => {},
     };
-    return { stdout: this.#out, stderr: new PassThrough(), stdin, exit: this.#exit };
+    return { stdout: this.#out, stderr: this.#said, stdin, exit: this.#exit };
   }
 
   #take(text: string): void {
@@ -102,6 +123,11 @@ export class Peer {
     this.#out.write(line);
   }
 
+  /** Said on the other stream: what a runtime writes when it cannot go on. */
+  wrote(text: string): void {
+    this.#said.write(text);
+  }
+
   append(event: Event): void {
     this.say({ t: 'event', event });
   }
@@ -127,11 +153,31 @@ export class Peer {
     return this.received.flatMap((frame) => (frame.t === 'message' ? [frame.content] : []));
   }
 
-  /** Ended without speaking, the way a killed process does. */
+  /**
+   * Ended without speaking, the way a killed process does.
+   *
+   * **The ending settles after the streams do, which is what a real process's does.** Node
+   * reports a child's ending on `close` — after its output has been flushed and read — so a
+   * supervisor that has the exit has, by then, also had whatever the process said on its way
+   * out. A double that settled first would let a report of an ending be written before the
+   * words explaining it arrived, and the test would be watching a race the driver it stands
+   * in for does not have.
+   */
   die(exit: Exit = { code: 137, signal: null }): void {
     this.destroyed = true;
-    this.#ending(exit);
     this.#out.end();
+
+    const settle = (): void => {
+      this.#ending(exit);
+      this.#wake();
+    };
+    // Only where something is actually reading it. An unread stream never reaches `end`, so
+    // waiting on one would hang a test rather than order it — and a reader is what the
+    // ordering is for.
+    const read = this.#said.listenerCount('readable') > 0 || this.#said.listenerCount('data') > 0;
+    if (read) this.#said.once('end', settle);
+    this.#said.end();
+    if (!read) settle();
     this.#wake();
   }
 

@@ -83,7 +83,15 @@ export interface ExecOptions {
  * a send that could not be delivered rejects, the caller is told, and the caller lives.
  */
 export interface Input {
-  /** Send. Resolves once it has gone; rejects, rather than crashing, where it could not. */
+  /**
+   * Send. Resolves once it has gone; rejects, rather than crashing, where it could not.
+   *
+   * **It may resolve arbitrarily late, and never is among the possibilities.** What is on
+   * the other side is a process, and one that has stopped reading — wedged, stopped, or
+   * merely busy — leaves a send with nothing to report and nothing to fail with. A caller
+   * holding more than one process must not make one process's silence every process's
+   * problem, which is a statement about the caller and is why it is written here.
+   */
   send(text: string): Promise<void>;
   /** Nothing further. The process observes this as its input ending. */
   end(): Promise<void>;
@@ -99,6 +107,17 @@ export interface Input {
  * for a process built to stay up and converse is never. A test wanting the whole of it can
  * accumulate a stream in a line or two; a caller wanting a stream cannot recover one from
  * a buffer.
+ *
+ * **Every stream here is the caller's to read, including one it has no use for.** This is a
+ * requirement on the caller rather than a convenience, and it was implicit until a run
+ * discovered what implicit cost: an output nobody reads is one that fills, and a process
+ * whose output has filled stops — not reading its input, not taking a step, not ending, and
+ * not distinguishable from one still working. An implementation is free to carry both
+ * outputs over one connection, which is what makes the unread one able to stop the other.
+ *
+ * **{@link exit} settles after the streams have.** A caller that reads output to explain an
+ * ending needs the ending to be the later of the two, so an implementation reports the
+ * process as over once its output has been delivered rather than at the moment it stopped.
  */
 export interface Process {
   stdout: Readable;

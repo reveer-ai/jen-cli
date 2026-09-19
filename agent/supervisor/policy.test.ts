@@ -48,12 +48,36 @@ describe('the supervisor holds no period of its own', () => {
   });
 
   it('writes no number that could be one either', () => {
-    // Anything with a digit separator, anything multiplied out, and anything long enough to
-    // be a count of milliseconds. `ms: 0` and a bound of `0` survive, which is the point:
-    // zero is the absence of a request rather than a period.
+    // Anything with a digit separator and anything multiplied out, wherever it appears:
+    // both are how a count of milliseconds is spelled when someone wants it to read as
+    // arithmetic rather than as a number.
     expect(DECLARATIONS).not.toMatch(/\b\d+_\d+/);
     expect(DECLARATIONS).not.toMatch(/\b\d+\s*\*\s*\d+/);
-    expect(DECLARATIONS).not.toMatch(/\b\d{3,}\b/);
+
+    // And a number long enough to *be* a count of milliseconds is named here, one by one.
+    // `ms: 0` and a bound of `0` survive, which is the point — zero is the absence of a
+    // request rather than a period.
+    //
+    // **An allowlist rather than a rule about where a long number may sit.** A position rule
+    // — alone, as the whole of a named binding — reads as though the name test above closes
+    // the other half of the door, and it does not: that test matches a suffix list, and
+    // `RESIDENCY`, `KEEP`, `TTL`, `EXPIRY` and `LIFETIME` are none of them. `const RESIDENCY
+    // = 30000;` satisfies a position rule, passes the name test, and leaves `arms exactly
+    // one timer` untouched, because a default is applied at the call site and `setTimeout(…,
+    // keep)` reads the same either way. The three guards are locks on three different doors,
+    // so a position rule leaves this one with none.
+    //
+    // The property actually wanted was never "a long number may sit in a binding" — it is
+    // "there is one long number in this file and it is this one", which is what naming it
+    // says and nothing weaker does. Adding a second is then an edit to this list: the
+    // deliberate act the guard exists to force, in front of the person best placed to ask
+    // whether the new one is a bound or a period.
+    const long = DECLARATIONS.split('\n')
+      .map((line) => line.trim())
+      .filter((line) => /\b\d{3,}\b/.test(line));
+    expect(long, 'a long number in the supervisor is a period until this test says otherwise').toEqual([
+      'const SAID = 4096;',
+    ]);
   });
 
   it('arms exactly one timer, and never on a number of its own', () => {
