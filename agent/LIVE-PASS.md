@@ -16,10 +16,10 @@ structural criterion is unaffected.
 - A model credential. The records below reach OpenRouter, so `OPENROUTER_API_KEY` in the
   environment you start the operator from. Any OpenAI-compatible endpoint works — the
   provider is a value on the record and not a commitment in code.
-- For §3 only: whatever the image's assistant authenticates with, in that same environment.
-  **It must be a value an environment variable can carry.** `agent-sandbox` forbids a secret
-  reaching a file, inside the sandbox or outside it, so there is no login-file fallback and
-  this is the whole question §3 asks.
+- For §3 only: `CLAUDE_CODE_OAUTH_TOKEN` in that same environment, which `claude
+  setup-token` mints from a Claude subscription. **It must be a value an environment
+  variable can carry.** `agent-sandbox` forbids a secret reaching a file, inside the sandbox
+  or outside it, so there is no login-file fallback and this is the whole question §3 asks.
 
 Credentials reach an agent by *reference*: the record names a variable, the operator's own
 environment holds the value, and the sandbox writes it onto each process's standard input as
@@ -53,7 +53,7 @@ Then:
 
 ```bash
 node agent/operator.ts ~/.jen live-1 chief.json \
-  'Find out what this repository builds, how it is tested, and what its riskiest untested area is. Three separate questions — do not answer them yourself.'
+  'Draft a complete employee handbook for a 200-person company, covering three areas: workplace policies, compensation and benefits, and IT and security practices. Each area is large — it has many distinct sections that different people would need to write.'
 ```
 
 Type into it to answer the root; end its input to end the run. Watch a second terminal:
@@ -62,12 +62,38 @@ Type into it to answer the root; end its input to end the run. Watch a second te
 watch -n1 'docker ps --filter label=jen.run=live-1 --format "{{.Label \"jen.agent\"}} {{.Status}}"'
 ```
 
+**The opening is chosen, and a different one can make the pass unanswerable.** Two things
+about it are load-bearing, and both were learned by running something else first.
+
+It asks for work the agent can do **from nothing**. A workspace is a fresh empty volume and
+nothing mounts this repository, or any other, into it — so an opening that asks what "this
+repository" builds asks the chief about something it has no way to look at, and what comes
+back is a finding about the question.
+
+And it asks for work that **nests**. Three independent questions decompose into three
+self-contained pieces, and a chief that reads them correctly gives its children nothing:
+run that way and both Opus-5 and Sonnet-5 fan out one level with every child `tools: []`,
+Sonnet saying so in its own reasoning — *"since these are self-contained tasks needing no
+further sub-spawning, I'll skip granting them spawn or extra tools."* That is the model
+weighing the grant and declining, which is the criterion working; but it means depth 2 can
+never be reached from that opening, and a reader following the document would write down
+"fanned out one level and stopped" as a finding about the charter when it is a finding about
+the question they were told to ask. The opening above produced 45 agents and 14 at depth 2
+on the first run, with the chief granting `['spawn','send','await','read','stop']` downward
+unprompted.
+
+**Pick the subject carefully too.** An earlier attempt asked for sandbox-escape failure
+modes; the provider refused two children under its content policy, and a provider refusal
+arrives as an ordinary child report with nothing marking it as one — so the chief read the
+refusals as truncated work and respawned into them. That is how one run reached ten children
+and about $2.
+
 **What each criterion looks like when it passes.** The structural ones are the tier's, and
 seeing them here is confirmation rather than evidence:
 
 | | Passing looks like |
 |---|---|
-| Depth ≥ 2 | `~/.jen/runs/live-1/agents/` holds an id of the form `live-chief-N-M`. Its `record.json` has `parent` set to `live-chief-N`, whose own parent is `live-chief`. **This is the criterion of the pass**, and it is the one a model can fail: a chief that did the work itself, or fanned out one level and stopped, is a finding about the charter rather than about the substrate. |
+| Depth ≥ 2 | `~/.jen/runs/live-1/agents/` holds an id of the form `live-chief-N-M`. Its `record.json` has `parent` set to `live-chief-N`, whose own parent is `live-chief`. **This is the criterion of the pass**, and it is the one a model can fail — but read a failure against the opening before reading it against the charter. Depth follows from work that genuinely nests; against work that does not, a chief which fans out one level and grants its children nothing has judged correctly, and that is a finding about what it was asked rather than about how it was told to lead. |
 | Parallelism | `docker ps` shows two or more agents at once, each with its own container, while the chief's own is gone. |
 | One messaging path | The chief's transcript shows `spawn`, `send` and `await` calls and nothing else reaching its children; your typed lines arrive in its transcript as `message` events with `from: "parent"`, exactly as a child's do. |
 | Suspension | `docker ps` is **empty** whenever every agent is waiting — including while the chief waits for you. |
@@ -78,6 +104,16 @@ seeing them here is confirmation rather than evidence:
 **Record as findings, not as assertions:** whether the chief chose to delegate; whether any
 child chose to delegate further; how many children it ran at once; and anything it did that
 the scripted tier could not have produced.
+
+**And watch for a tree that has stopped without saying so**, which is not a criterion and is
+the most valuable thing this pass has found. It looks like containers that stay up while
+`docker stats` shows every one of them at 0%, no line added to any
+`events.ndjson` for minutes, and the stored states still reading `working`. The substrate
+reports a stall only when every agent is *waiting*, so a tree stopped in any other state
+says nothing and looks exactly like a tree thinking hard. The cause found in the first pass
+is fixed and tested; if you see the shape again it is something else, and what is worth
+capturing is which agents were in which state, what `docker stats` said, and whether
+anything was still being written.
 
 ## 2. Resume, and a body that dies
 
@@ -98,16 +134,29 @@ them happen with a model that is really thinking.
 
 ## 3. Does the assistant authenticate from the environment alone?
 
-The one open question this pass exists to answer. Add the assistant's credential to the
-record and tell the agent what its image has:
+**Answered, and it costs nothing to repeat.** `claude` authenticates inside a container from
+the environment alone, with no login file anywhere — confirmed through the substrate's own
+credential path rather than through `docker run -e`: the value arrived by the sandbox's
+standard-input prologue, `claude -p 'reply with the word ready'` answered `ready` with exit
+0, and a filesystem scan found no `.credentials.json` and no `auth.json`. `agent-sandbox`'s
+rule holds on the live path, which is the question this section exists to ask.
+
+**The variable is `CLAUDE_CODE_OAUTH_TOKEN`, not `ANTHROPIC_API_KEY`.** That is worth more
+than tidiness: an API key needs a paid API account, and this needs only a subscription,
+because `claude setup-token` mints one from it. Add it to the record and tell the agent what
+its image has:
 
 ```json
   "charter": "…\n\nYour image provides the `claude` command, run headlessly as `claude -p '<prompt>'`. Its credentials are already in your environment — you never supply one. Check it is there before you rely on it.",
   "credentials": [
     { "name": "MODEL_API_KEY", "ref": "env:OPENROUTER_API_KEY" },
-    { "name": "ANTHROPIC_API_KEY", "ref": "env:ANTHROPIC_API_KEY" }
+    { "name": "CLAUDE_CODE_OAUTH_TOKEN", "ref": "env:CLAUDE_CODE_OAUTH_TOKEN" }
   ]
 ```
+
+The `name` is what the variable is called *inside* the sandbox, where `claude` reads it; the
+`ref` is where the value comes from on the machine running the operator. They need not match,
+so `"ref": "env:WHATEVER_YOU_CALLED_IT"` works without renaming anything on the host.
 
 The charter is where this belongs and nowhere else — `WORKSPACE_CHARTER` in
 `runtime/workspace.ts` is the template, and it is a template *for the caller* rather than
@@ -118,7 +167,7 @@ Then ask the agent to run `claude -p 'reply with the word ready'` through `exec`
 its transcript.
 
 - **It works** → record the variable it read and the version it ran, and the assistant half
-  of ENG-194 is done.
+  of ENG-194 is done. It did, on `2.1.277 (Claude Code)`.
 - **It does not** → record the exact failure, verbatim. **Do not reach for a login file.**
   `agent-sandbox` forbids a secret reaching a file and leaves no fallback, so this becomes
   its own task rather than a workaround, and nothing else in the substrate depends on it.

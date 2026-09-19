@@ -40,17 +40,21 @@
 - [x] 5.1 Fix what the run breaks, keeping each fix to what the run actually demonstrated; where a fix changes a requirement, add a delta to the capability it belongs to rather than editing a spec in place — one fix: a message handed to a live body and never recorded was lost when the supervisor ended that body. Found by the first run by hand, in one try. Delta added to `agent-supervisor`. Review found the fix incomplete on its third caller — a residency expiry restored the message and nothing delivered it — so the delta gains a paragraph and a scenario for it, and `#retire` is where the settle goes. Review then found that settle unbounded: anything queued behind a shutdown reaches it over a closed run and provisions a body for an agent the run has finished with. The bound is one line in `#settle` rather than at `#retire`, because a late frame and an outside `tell()` arrive the same way; the delta gains a sentence and a scenario for it, and there is a regression test per entrance
 - [x] 5.2 Record whether the supervisor's unbounded provisioning retry costs anything real — the question `supervisor/AGENTS.md` defers to this run — as a finding, without adding a backoff, a ceiling or any other constant to the supervisor — measured and recorded there: zero attempts while idle, ~13ms each per external event, and the number worth knowing is the settle loop's doubling rather than the retry
 
+- [x] 5.3 Fix what the live pass broke: a tree that stops with every body recorded `working`, no container using any processor, nothing written to any transcript, and no condition reported — reproduced, narrowed and closed. **A body's standard error had no reader**, so a body that wrote more to it than the pipe holds blocked inside a write forever, and with it the standard output the runtime carries over the same connection; a 1 MiB probe through the real driver shows `before` arriving and `after` never doing. Drained now, kept as a bounded tail, and handed to the parent in the termination report, which is the only place a runtime that could not boot ever says why. **And a write to a body was awaited from inside the run's serial queue**, which every transition passes through — so one body that had stopped reading stopped every agent. `#say` queues per body and returns. Delta added to `agent-supervisor`; the requirement it leaves on a driver's caller is written into `sandbox/index.ts`; a regression test per half, each confirmed to hang or fail without the fix
+
 ## 6. The live pass
 
 - [x] 6.1 Write down how to perform the live pass: the records, the credentials it needs, what to watch, and what each criterion looks like when it passes — `agent/LIVE-PASS.md`
-- [ ] 6.2 Run it against real models with charters rather than scripts, and record whether an agent reaches depth 2 by its own judgment — as a finding, not an assertion
-- [ ] 6.3 Verify a headless coding assistant authenticates inside a container from its environment alone, with no login file; if it cannot, record exactly how it failed and raise it as its own task rather than reaching for a file
-- [ ] 6.4 Record the result of the live pass on the task, including anything it found that the automated tier cannot see
+- [x] 6.2 Run it against real models with charters rather than scripts, and record whether an agent reaches depth 2 by its own judgment — as a finding, not an assertion — **it does**: Sonnet-5 over OpenRouter, 45 agents, 14 at depth 2, parentage read off records (`live-chief-2-1` → `live-chief-2` → `live-chief` → `null`), 20 containers at once, the chief granting `['spawn','send','await','read','stop']` downward unprompted. The two flat runs before it are the more useful finding and neither was a substrate failure: against three independent questions the model *weighs* the grant and declines it, in its own words, so `LIVE-PASS.md` §1's example could never have demonstrated the criterion and is replaced with work that nests
+- [x] 6.3 Verify a headless coding assistant authenticates inside a container from its environment alone, with no login file; if it cannot, record exactly how it failed and raise it as its own task rather than reaching for a file — **it does**, through the substrate's own credential path rather than `docker run -e`: the value arrived by the sandbox's standard-input prologue, `claude -p` answered with exit 0, and no `.credentials.json` or `auth.json` exists anywhere. The variable is `CLAUDE_CODE_OAUTH_TOKEN` rather than `ANTHROPIC_API_KEY`, which `claude setup-token` mints from a subscription — so §3 needs no paid API account, and `LIVE-PASS.md` said otherwise
+- [x] 6.4 Record the result of the live pass on the task, including anything it found that the automated tier cannot see — recorded on ENG-199, and what it found that no tier could see is 5.3
 
-> 6.2–6.4 are a person's and are deliberately left open: they cost tokens, they need
-> credentials this pipeline does not hold, and their outcome is a finding rather than an
-> assertion. Nothing else in the change depends on them. `agent/LIVE-PASS.md` is what makes
-> them repeatable by someone who did not run them the first time.
+> 6.2–6.4 were a person's, and were done by one: they cost tokens, they need credentials this
+> pipeline does not hold, and their outcome is a finding rather than an assertion. Nothing
+> else in the change depended on them, and they still repaid the cost — the one defect no
+> tier could see came out of them, and `LIVE-PASS.md` gained two corrections that only
+> running it could have found. It is what makes the pass repeatable by someone who did not
+> run it the first time.
 
 ## 7. Notes and verification
 
