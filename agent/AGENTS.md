@@ -242,6 +242,50 @@ exit where it has one (its stderr says more about why than the pipe does), and a
 rejection where the subprocess exited *zero* — because a command that ran without the
 credentials it was sent looks exactly like one that had them.
 
+## A body's channel is two pipes and one thread, and both halves of that bite
+
+The supervisor holds tens of bodies, and each one is a subprocess whose standard input,
+standard output and standard error are pipes with finite buffers. Behind them is a
+single-threaded process. Everything below follows from those two sentences, and none of it
+was visible until a run with real models produced enough output to fill anything.
+
+**A stream nobody reads stops the process, and stops its other streams with it.** This is the
+one that cost a run. The supervisor read a body's standard output and left its standard error
+with no reader at all, which is fine until a body writes more to it than the pipe holds —
+after which that body blocks *inside a write*, forever. It does not fail, does not exit, does
+not read its input and does not take a step. Its container is up, it uses no processor, and
+its stored state still says `working`, which is exactly what an agent thinking hard looks
+like. And because a container runtime carries a process's two outputs over one connection and
+splits them at this end, the blocked standard error stops the standard output too, so the
+supervisor sees nothing further on the channel either. A 20-line probe is enough to see it:
+run `sh -c 'printf before; …1 MiB to stderr…; printf after'` through the driver, read stdout
+only, and `after` never arrives.
+
+Every stream is therefore read, and `sandbox/index.ts` says so as a requirement on the
+caller rather than leaving it to be rediscovered. What is read from standard error is kept as
+a bounded tail and handed to the parent in the termination report, because a runtime that
+could not read its boot frame writes the reason there and nowhere else — and a parent
+choosing between retrying, replacing and escalating was otherwise choosing on `exit 1`.
+
+**A write to a body may never come back, so nobody waits for one.** The same single thread
+means a body that has stopped reading is a body a `send` to does not return from — not as a
+rejection, which is handled, but not at all. `#say` used to be awaited from inside the
+supervisor's serial queue, which every state transition in the run passes through, so one
+body in that state stopped *every* agent: no delivery anywhere, no frame read from any other
+body, nothing written to any transcript, and no stall reported, because a stall is only
+reported when every agent is `waiting` and these all said `working`. Nothing was ever owed by
+the wait — the result was discarded either way, since what a body does with what it is sent
+is not something the send can report — so `#say` now queues per body and returns, which keeps
+the order and costs nothing.
+
+**Pipe writes block on Linux and do not on macOS**, which is why the substrate's own tests
+had to be run against containers to see any of this. Node writes to a pipe synchronously on
+Linux and asynchronously on macOS, so a runtime inside a container blocks where the same code
+on the host quietly buffers — and the double in `supervisor/double.ts` cannot model either,
+because its streams are objects that accept whatever is written. Anything about backpressure
+is `containers.test.ts`'s to hold, and anything about *waiting* can be held in the double by
+making a `send` that never settles, which is what `Peer.deaf` is.
+
 ## `close` on a child is not the end of its process group
 
 `exec` spawns `detached` so the child leads a process group, and terminates by signalling

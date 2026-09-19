@@ -48,12 +48,28 @@ describe('the supervisor holds no period of its own', () => {
   });
 
   it('writes no number that could be one either', () => {
-    // Anything with a digit separator, anything multiplied out, and anything long enough to
-    // be a count of milliseconds. `ms: 0` and a bound of `0` survive, which is the point:
-    // zero is the absence of a request rather than a period.
+    // Anything with a digit separator and anything multiplied out, wherever it appears:
+    // both are how a count of milliseconds is spelled when someone wants it to read as
+    // arithmetic rather than as a number.
     expect(DECLARATIONS).not.toMatch(/\b\d+_\d+/);
     expect(DECLARATIONS).not.toMatch(/\b\d+\s*\*\s*\d+/);
-    expect(DECLARATIONS).not.toMatch(/\b\d{3,}\b/);
+
+    // And a number long enough to *be* a count of milliseconds may appear in exactly one
+    // position: alone, as the whole of a named binding. `ms: 0` and a bound of `0` survive,
+    // which is the point — zero is the absence of a request rather than a period.
+    //
+    // **The position is the whole of what this allows, and the name is still tested.** The
+    // test above reads every binding in this file and fails any whose name could be a
+    // period, so a `const KEEP_ALIVE_MS = 30000` is refused there and a byte bound on a
+    // buffer is not. What stays refused here is the shape a period actually takes when it
+    // is smuggled in: a literal passed to a timer, compared against a clock, or added to
+    // one. Widening this to "long numbers are fine" would give all of that away; it admits
+    // one position and one position only.
+    const bound = new RegExp(`^\\s*(?:const|let|var|readonly)\\s+#?[A-Za-z_][A-Za-z0-9_]*(?::[^=]+)?\\s*=\\s*\\d{3,};\\s*$`);
+    for (const line of DECLARATIONS.split('\n')) {
+      if (!/\b\d{3,}\b/.test(line)) continue;
+      expect(line, 'a number this long belongs alone in a named binding, or nowhere').toMatch(bound);
+    }
   });
 
   it('arms exactly one timer, and never on a number of its own', () => {

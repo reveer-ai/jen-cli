@@ -182,7 +182,58 @@ interface Body {
    * that has nothing new in it.
    */
   handed?: Message;
+  /**
+   * Frames on their way to this body, in the order they were said.
+   *
+   * **A write to one body must never be something the rest of the run waits behind**, and
+   * until this existed it was exactly that. The channel is a pipe with a finite buffer and
+   * the process at the far end is one thread, so a body that has stopped reading — wedged,
+   * stopped, or merely busy — is one a write to never completes. {@link Supervisor.#say}
+   * used to be awaited from inside the serial queue, so that one write held every transition
+   * in the run: no delivery anywhere, no frame from any other body read, no transcript
+   * written. Every container still up, none of them using any CPU, and nothing able to say
+   * why. That is what the live pass found, and one wedged body was the whole of what it
+   * took.
+   *
+   * Nothing was ever waiting on the flush for its own sake: a write to a body that has gone
+   * is deliberately swallowed, because its exit is already on its way to `#ended`, which is
+   * where an agent that ended without speaking becomes something its parent can act on. So
+   * the result was discarded the moment it arrived and the only thing the `await` bought was
+   * the order — which this keeps, per body, without anyone waiting for it.
+   */
+  sent: Promise<void>;
+  /**
+   * The tail of what this body wrote on its standard error.
+   *
+   * **Kept because it has to be read, and reported because it is worth something.** A pipe
+   * nobody reads is a pipe that fills, and this one had no reader at all. It needs no
+   * misbehaviour to reach: the process at the far end blocks in a write once the buffer is
+   * full, and since a container runtime carries a process's two output streams over one
+   * connection, a blocked standard error stops its standard output with it. The body then
+   * sits alive, idle and silent for good, its stored state still saying `working` — which
+   * is indistinguishable from an agent thinking, and is the thread the whole freeze above
+   * hangs from.
+   *
+   * Draining is therefore not optional, and what is drained may as well be what it is: a
+   * runtime that could not read its boot frame says why here and nowhere else, so
+   * {@link Supervisor.#ended} hands it to the parent being told this agent will not speak.
+   */
+  said: string;
 }
+
+/**
+ * How much of a body's standard error is kept.
+ *
+ * A bound rather than a policy, and the distinction is what makes a number acceptable in
+ * this file at all: it decides how much of a diagnostic is held in memory, not anything
+ * about what an agent may do or how long it may take. It has to be bounded, because a body
+ * can write without limit and this process is holding every agent in the run.
+ *
+ * The **tail** rather than the head, because the failure is at the end. A runtime that could
+ * not read its boot frame says so in one line and exits; one that died deep in a turn is
+ * explained by its last words rather than by its first.
+ */
+const SAID = 4096;
 
 export interface SupervisorOptions {
   store: Store;
@@ -523,7 +574,7 @@ export class Supervisor {
       }),
     );
 
-    const body: Body = { sandbox, process: started };
+    const body: Body = { sandbox, process: started, sent: Promise.resolve(), said: '' };
     this.#bodies.set(id, body);
 
     // **Both of these are promises nobody holds**, so a rejection escaping either is an
@@ -531,6 +582,9 @@ export class Supervisor {
     // holding every other agent in the run. The same argument narrowed `Input` away from a
     // stream in `sandbox/index.ts`: one agent's failure must not be every agent's.
     void this.#listen(id, body).catch((error: unknown) => this.#failed(id, error));
+    // **Every stream this body has is read, and this is the one that had no reader at
+    // all.** See {@link Body.said}.
+    void this.#overhear(body).catch((error: unknown) => this.#failed(id, error));
     void started.exit
       .then(
         (exit) => this.#serial(() => this.#ended(id, body, exit.signal ?? `exit ${exit.code ?? 0}`)),
@@ -571,7 +625,7 @@ export class Supervisor {
       } catch (error) {
         // Reported to the agent that sent it, and nothing else happens: its other
         // outstanding requests are untouched, because none of them is what was unreadable.
-        await this.#say(id, {
+        this.#say(id, {
           t: 'malformed',
           reason: error instanceof ProtocolError ? error.message : String(error),
         });
@@ -595,13 +649,33 @@ export class Supervisor {
           this.#failed(id, error);
           continue;
         }
-        await this.#say(id, {
+        this.#say(id, {
           t: 'answer',
           id: frame.id,
           ok: false,
           content: error instanceof Error ? error.message : String(error),
         });
       }
+    }
+  }
+
+  /**
+   * Read this body's standard error for as long as it has one, keeping the tail.
+   *
+   * **The reading is the point and the keeping is the dividend.** See {@link Body.said}: the
+   * pipe exists whether or not anybody wants what comes out of it, and one that is never
+   * read fills and stops the process behind it. So this cannot be a `resume()` with the
+   * bytes thrown away *and* be honest about why it is here; the tail is what a parent is
+   * told when the body ends, and it is the only place a runtime that failed to boot ever
+   * says why.
+   *
+   * Nothing checks whether this is still the agent's body. A stream that ends is what ends
+   * this loop, and abandoning one early is precisely the mistake above.
+   */
+  async #overhear(body: Body): Promise<void> {
+    body.process.stderr.setEncoding('utf8');
+    for await (const chunk of body.process.stderr) {
+      body.said = (body.said + (chunk as string)).slice(-SAID);
     }
   }
 
@@ -626,7 +700,20 @@ export class Supervisor {
     // Delivered as an ordinary message, by the ordinary paths. Turning a failure into input
     // is what lets the parent's weights choose between retrying, replacing, escalating and
     // giving up — none of which the substrate should be choosing.
-    await this.#post(agent.parent, { from: id, content: `${id} terminated: ${how}`, substrate: true });
+    //
+    // **What the body said on its way out is part of that input**, where it said anything. A
+    // signal and an exit code tell a parent that a child stopped; a runtime that could not
+    // read its boot frame, or that died on a step, wrote the reason on its standard error
+    // and nowhere else, and a parent choosing between retrying and replacing is choosing on
+    // that. Appended rather than substituted, because the ending is the fact and this is the
+    // account of it — and omitted where there is nothing, rather than reported as an empty
+    // one.
+    const said = body.said.trim();
+    await this.#post(agent.parent, {
+      from: id,
+      content: `${id} terminated: ${how}${said === '' ? '' : `. It last said: ${said}`}`,
+      substrate: true,
+    });
     await this.#settle();
   }
 
@@ -904,7 +991,7 @@ export class Supervisor {
     // acknowledgement that outran the write would be the substrate lying about the one
     // thing the caller can check.
     await this.#post(upward ? null : to, { from: id, content });
-    await this.#say(id, { t: 'answer', id: frame.id, ok: true, content: `delivered to ${to}` });
+    this.#say(id, { t: 'answer', id: frame.id, ok: true, content: `delivered to ${to}` });
     await this.#settle();
   }
 
@@ -941,8 +1028,9 @@ export class Supervisor {
   async #spawning(id: string, frame: RequestFrame, input: Record<string, unknown>): Promise<void> {
     const parent = this.#store.record(id);
     const agent = this.#store.agent(id);
-    const refuse = (content: string): Promise<void> =>
+    const refuse = (content: string): void => {
       this.#say(id, { t: 'answer', id: frame.id, ok: false, content });
+    };
 
     // Supplied and not honoured is the one outcome worth refusing outright: a caller that
     // named one of these believes it will take effect, and it never can.
@@ -1013,7 +1101,7 @@ export class Supervisor {
     // model step, a report, or anything the child does with what it was given: an id
     // returned only after the child had finished would make every fan-out a join.
     await this.#add(record, opening);
-    await this.#say(id, { t: 'answer', id: frame.id, ok: true, content: record.id });
+    this.#say(id, { t: 'answer', id: frame.id, ok: true, content: record.id });
   }
 
   /**
@@ -1055,7 +1143,7 @@ export class Supervisor {
       await this.#suspend(one);
     }
 
-    await this.#say(id, { t: 'answer', id: frame.id, ok: true, content: `stopped ${target}` });
+    this.#say(id, { t: 'answer', id: frame.id, ok: true, content: `stopped ${target}` });
     await this.#settle();
   }
 
@@ -1102,7 +1190,7 @@ export class Supervisor {
       typeof input.count === 'number' && input.count > 0 ? Math.floor(input.count) : Number.POSITIVE_INFINITY;
     const events = await this.#store.transcript(target, from, count);
 
-    await this.#say(id, {
+    this.#say(id, {
       t: 'answer',
       id: frame.id,
       ok: true,
@@ -1281,7 +1369,7 @@ export class Supervisor {
       // it is written by `#answerInLog` before anything boots — neither is a message this
       // supervisor is holding alone. See {@link Body.handed}.
       if (answering === null) body.handed = message;
-      await this.#say(
+      this.#say(
         id,
         answering === null ? { t: 'message', content } : { t: 'answer', id: answering, ok: true, content },
       );
@@ -1300,7 +1388,7 @@ export class Supervisor {
       const woken = await this.#boot(id, answering !== null);
       if (answering === null) {
         woken.handed = message;
-        await this.#say(id, { t: 'message', content }, woken);
+        this.#say(id, { t: 'message', content }, woken);
       }
     } catch (error) {
       // **The message is now in no mailbox, no log and no living process.** It left the
@@ -1357,16 +1445,36 @@ export class Supervisor {
     await this.#store.append(id, answer);
   }
 
-  /** One frame to one agent. A body that cannot be written to is not a run-ending failure. */
-  async #say(id: string, frame: Parameters<typeof encode>[0], to?: Body): Promise<void> {
+  /**
+   * One frame to one agent, said now and waited for by nobody.
+   *
+   * **A body that cannot be written to is not a run-ending failure, and nor is one that is
+   * merely not listening.** The second is what this shape is for — see {@link Body.sent}.
+   * The far end of the channel is one thread behind a pipe with a finite buffer, so a body
+   * that has stopped reading is a body a write to does not come back from; awaiting it from
+   * inside the serial queue made one such body enough to stop every agent in the run.
+   *
+   * Nothing is given up by not waiting. The failure was already swallowed here and is
+   * reported by the body's own exit, at `#ended`, where an agent that ended without speaking
+   * becomes something its parent can act on — and the order frames are said in is kept by
+   * the chain rather than by the caller.
+   */
+  #say(id: string, frame: Parameters<typeof encode>[0], to?: Body): void {
     const body = to ?? this.#bodies.get(id);
     if (body === undefined) return;
-    try {
-      await body.process.stdin.send(encode(frame));
-    } catch {
-      // The body has gone. Its exit is already on its way here, and that is where an agent
-      // that ended without speaking is turned into something its parent can act on.
-    }
+    const text = encode(frame);
+    body.sent = body.sent.then(
+      async () => {
+        try {
+          await body.process.stdin.send(text);
+        } catch {
+          // The body has gone. Its exit is already on its way here, and that is where an
+          // agent that ended without speaking is turned into something its parent can act
+          // on.
+        }
+      },
+      () => {},
+    );
   }
 }
 

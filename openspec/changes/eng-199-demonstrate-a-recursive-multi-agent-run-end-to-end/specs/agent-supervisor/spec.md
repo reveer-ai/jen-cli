@@ -46,3 +46,34 @@ A body that ended without the supervisor intending it SHALL NOT have its message
 - **WHEN** a body ends without the supervisor intending it, holding a message it never recorded
 - **THEN** its parent is told that it terminated
 - **AND** the message is not returned to its mailbox
+
+### Requirement: No part of a body's channel goes unread, and no one body's channel holds up another
+
+The supervisor SHALL read every stream a body's process offers, for as long as that process offers it, including a stream it has no use for. And a write to one body's input SHALL NOT hold up work for any other agent.
+
+Both follow from what the channel is. It is a pipe with a finite buffer and a single thread behind it, so an unread stream is a stream that fills, and a process whose output is blocked is a process that has stopped — not reading its input, not taking a step, not ending. Its container is up, it uses no processor, its stored state still says it is working, and there is no way to tell it from an agent that is thinking. That is the one failure the substrate must not be able to produce quietly, and leaving a stream with no reader at all produces it without the agent doing anything unusual.
+
+A body that has stopped this way, or for any other reason, is also one a write to does not come back from — not as a failure, which is reported by that body's own ending, but not at all. Waiting for such a write is what turns one stuck agent into a stopped run: no delivery to anyone, no frame read from any other body, nothing written to any transcript, and no condition reported anywhere, because every agent's records still say work is under way. Nothing is owed by the wait either, since what a body does with what it is sent is not something the send can report. The order frames are said to *one* body in SHALL be preserved.
+
+What a body wrote on its standard error before ending SHALL be carried in the report its parent is given. A signal and an exit code say that a child stopped; a runtime that could not read what it was booted with, or that failed mid-turn, says why there and nowhere else, and a parent choosing between retrying, replacing and escalating is choosing on that.
+
+#### Scenario: A body that writes more than the channel holds still finishes its turn
+
+- **WHEN** an agent's body writes more to a stream the supervisor does not otherwise use than that channel can hold
+- **THEN** the body continues, takes its turn, and reports
+
+#### Scenario: One body that takes nothing is one agent's trouble
+
+- **WHEN** a message is handed to a body that accepts nothing sent to it and reports nothing about it
+- **THEN** another agent's request is still answered, and another agent is still delivered to
+- **AND** nothing is reported as the supervisor's own failure
+
+#### Scenario: A body's last words reach its parent
+
+- **WHEN** a body ends without the supervisor intending it, having written to its standard error
+- **THEN** the report its parent is given names how it ended and carries what it said
+
+#### Scenario: A body that said nothing is reported as before
+
+- **WHEN** a body ends without the supervisor intending it, having written nothing to its standard error
+- **THEN** the report its parent is given names how it ended and claims nothing further
