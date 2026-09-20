@@ -16,6 +16,19 @@ structural criterion is unaffected.
 - A model credential. The records below reach OpenRouter, so `OPENROUTER_API_TOKEN` in the
   environment you start the operator from. Any OpenAI-compatible endpoint works — the
   provider is a value on the record and not a commitment in code.
+
+  **A key that authenticates is not a key that can pay, and the two fail differently.**
+  `/api/v1/key` reports the key's own limit and says nothing about the account's balance;
+  `/api/v1/credits` is what holds that. The runtime sets no `max_tokens`, so every request
+  asks for the model's whole output window and OpenRouter refuses it up front when *that
+  window* costs more than the balance left — `402 … you requested up to 65536 tokens, but
+  can only afford 36320` — before a token is generated and before any agent reasons. The
+  refusal is per-model, so a balance that cannot afford `claude-opus-5`'s window still runs
+  `claude-haiku-4.5`'s, and a pass that switches models to get moving is watching a
+  different model than the one it set out to. Check `/credits` before starting, and read a
+  mid-run `402` the same way: *exceed your available credits given your current in-flight
+  requests* is the concurrency form and settles on its own, *requires more credits, or fewer
+  max_tokens* does not.
 - For §3 only: `CLAUDE_OAUTH_TOKEN` in that same environment, which `claude setup-token`
   mints from a Claude subscription. **It must be a value an environment variable can
   carry.** `agent-sandbox` forbids a secret reaching a file, inside the sandbox or outside

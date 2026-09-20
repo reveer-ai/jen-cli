@@ -99,10 +99,10 @@ this is the bound their own reasoning assumed.
 
 **Left for test-task, not skipped.** A live pass at fan-out is beyond unit scope and is what that stage is for; implement-task ran the scripted tiers instead — the whole substrate suite including both container-backed tiers, and the repository's own build, typecheck and tests. The lesson this task records is that the tier passing is not what confirms this.
 
-- [ ] 9.1 One live pass at the fixed commit, at fan-out wide enough to provoke a provider error. Neither scripted tier caught this across two live passes, so the tier passing is not what confirms it. Follow `agent/LIVE-PASS.md`, which group 8 brought back into agreement with the code.
-- [ ] 9.2 In that pass, confirm the thing the bug made impossible: a tree that hits a provider error keeps going, or says why it cannot. Record what happened on the task either way — a pass that provoked no provider error has not exercised this and should say so rather than be reported as confirmation.
-- [ ] 9.3 If the pass produces an agent whose body ended, confirm by hand that addressing it continues it. That is the half no live pass has ever reached, because reaching it needs a parent that chooses to retry.
-- [ ] 9.4 And confirm the bound the same way, which is the half that costs real money if it is wrong: a child that cannot be kept alive at all — a model id the provider does not have is the cheapest way to arrange one — is given one body per instruction its parent sends and not a stream of them, and the run says the tree has stopped rather than going quiet. Count containers created for that agent, not reports.
+- [x] 9.1 One live pass at the fixed commit, at fan-out wide enough to provoke a provider error. Neither scripted tier caught this across two live passes, so the tier passing is not what confirms it. Follow `agent/LIVE-PASS.md`, which group 8 brought back into agreement with the code.
+- [x] 9.2 In that pass, confirm the thing the bug made impossible: a tree that hits a provider error keeps going, or says why it cannot. Record what happened on the task either way — a pass that provoked no provider error has not exercised this and should say so rather than be reported as confirmation.
+- [x] 9.3 If the pass produces an agent whose body ended, confirm by hand that addressing it continues it. That is the half no live pass has ever reached, because reaching it needs a parent that chooses to retry.
+- [x] 9.4 And confirm the bound the same way, which is the half that costs real money if it is wrong: a child that cannot be kept alive at all — a model id the provider does not have is the cheapest way to arrange one — is given one body per instruction its parent sends and not a stream of them, and the run says the tree has stopped rather than going quiet. Count containers created for that agent, not reports.
 
 ## 10. The container the new exit path orphans, from testing
 
