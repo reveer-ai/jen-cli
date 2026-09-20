@@ -47,10 +47,49 @@
 - [x] 6.2 Record in `agent/supervisor/AGENTS.md` that revival is triggered by mail and never by a settle's own walk, and why — it is the question the next reader will ask of the branch, and the answer is a judgment about where judgment belongs rather than anything the code shows.
 - [x] 6.3 Record the `ERR_STREAM_PREMATURE_CLOSE` ordering in a note nearest the code it applies to. It cost a verified probe to find and it is invisible in review: the wrong order still exits, still reports, and reports the wrong thing.
 
-## 7. Verification beyond the tier
+## 7. The bound on revival, from review
+
+Review found that the revival branch as landed is unbounded: the message that triggers it is
+never consumed, so it is still at the head of the mailbox when the new body dies and is
+re-read as a fresh instruction. One parent message buys bodies without limit — measured at
+284 in three seconds on the double — and `stalled` stays silent, because the message driving
+the loop reads as work about to happen. The rule and the subtraction it bought both stand;
+this is the bound their own reasoning assumed.
+
+- [x] 7.1 Add `#revived` to the supervisor: the agents already given a body for the mail they
+  are still holding. An id goes in when a body is successfully provisioned for a bodiless
+  agent — not when the provisioning failed, because no body was made and `#unprovisioned` has
+  just promised the parent a retry.
+- [x] 7.2 Take the mark in `#deliver`'s revival branch and return early where it is already
+  held. No counter and no timer, and the message stays pending: the bound is on how many
+  bodies one message buys.
+- [x] 7.3 Clear it in `#post` — a second decision buys a second body, and `#post` is the one
+  place anything reaches an agent's mailbox — and in `#turn`, where a revived body has reached
+  a boundary and so got somewhere.
+- [x] 7.4 Teach `#cannotMove` about it, or the bound leaves a bodiless agent holding mail
+  forever and invisible to the backstop. Read the mark against the `working` status it always
+  describes, so a mark that outlives its agent's state cannot make a reachable agent look
+  stuck.
+- [x] 7.5 Check the mark against `#settle`'s `#unreachable.delete(id)`, which clears on every
+  `#deliver` that returns without throwing — the refused revival included. The two marks stay
+  separate: `#unreachable` means "no body and no way to get one" and that clearing is right
+  for it; `#revived` means "already answered with a body" and must survive it. Say so where
+  each is.
+- [x] 7.6 Tests in `agent/supervisor/failure.test.ts`: one message buys one body however many
+  die; a further message buys a further body, with both still pending in order; and a tree
+  held only by an agent whose mail will not revive it is surfaced with that agent named as
+  stopped.
+- [x] 7.7 Confirm the two that should fail against the unbounded code do — an extra body, and
+  no stall ever surfaced. The third passes either way and is there to hold the re-arm.
+- [x] 7.8 Correct the three artifacts that assert the unbounded behaviour as intended:
+  `agent/supervisor/AGENTS.md`'s claim that mail-triggering prevents the loop, the spec
+  delta's SHALL, and the proposal's bullet making the same argument.
+
+## 8. Verification beyond the tier
 
 **Left for test-task, not skipped.** A live pass at fan-out is beyond unit scope and is what that stage is for; implement-task ran the scripted tiers instead — the whole substrate suite including both container-backed tiers, and the repository's own build, typecheck and tests. The lesson this task records is that the tier passing is not what confirms this.
 
-- [ ] 7.1 One live pass at the fixed commit, at fan-out wide enough to provoke a provider error. Neither scripted tier caught this across two live passes, so the tier passing is not what confirms it. Follow `agent/LIVE-PASS.md`.
-- [ ] 7.2 In that pass, confirm the thing the bug made impossible: a tree that hits a provider error keeps going, or says why it cannot. Record what happened on the task either way — a pass that provoked no provider error has not exercised this and should say so rather than be reported as confirmation.
-- [ ] 7.3 If the pass produces an agent whose body ended, confirm by hand that addressing it continues it. That is the half no live pass has ever reached, because reaching it needs a parent that chooses to retry.
+- [ ] 8.1 One live pass at the fixed commit, at fan-out wide enough to provoke a provider error. Neither scripted tier caught this across two live passes, so the tier passing is not what confirms it. Follow `agent/LIVE-PASS.md`.
+- [ ] 8.2 In that pass, confirm the thing the bug made impossible: a tree that hits a provider error keeps going, or says why it cannot. Record what happened on the task either way — a pass that provoked no provider error has not exercised this and should say so rather than be reported as confirmation.
+- [ ] 8.3 If the pass produces an agent whose body ended, confirm by hand that addressing it continues it. That is the half no live pass has ever reached, because reaching it needs a parent that chooses to retry.
+- [ ] 8.4 And confirm the bound the same way, which is the half that costs real money if it is wrong: a child that cannot be kept alive at all — a model id the provider does not have is the cheapest way to arrange one — is given one body per instruction its parent sends and not a stream of them, and the run says the tree has stopped rather than going quiet. Count containers created for that agent, not reports.

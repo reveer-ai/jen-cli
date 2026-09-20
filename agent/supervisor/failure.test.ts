@@ -895,6 +895,111 @@ describe('a turn that fails reaches the parent, and the parent can continue the 
 });
 
 /**
+ * What bounds revival, once revival exists.
+ *
+ * A revival leaves its message pending — an agent continuing an unfinished turn is not at
+ * the boundary where a message begins one — so the message that caused one is still at the
+ * head of the mailbox when the new body dies, and `#ended` → `#settle` → `#deliver` reads
+ * it as a fresh instruction. Triggering on mail rules out a settle reviving unbidden; it
+ * does not rule this out. Unbounded, one parent message costs a sandbox, a boot, a model
+ * call and another substrate report per death, in a loop the stall read cannot see, because
+ * the message driving it reads as work about to happen. A revival answers the message that
+ * caused it, so a further revival wants a further message. See ENG-216.
+ */
+describe('a revival answers one message, and a further one wants a further message', () => {
+  it('gives one body per message, however many of them die', async () => {
+    const run = await aPair(['await', 'send']);
+    const parent = run.driver.latest('a')!;
+    const child = run.driver.latest('a-1')!;
+    await parent.until(() => parent.messages().length > 0);
+
+    child.die({ code: 1, signal: null });
+    await until(() => reportsTo(run, 'a').length === 1, 'the first ending reaching the parent');
+
+    parent.ask('a:1', 'send', { to: 'a-1', content: 'Carry on.' });
+    await until(() => run.driver.all('a-1').length === 2, 'the child being given a new body');
+
+    // The second body dies exactly as the first did, without ever reaching a boundary —
+    // which is the shape a bad credential or a sustained 429 produces, and the one where a
+    // parent most wants to be told to stop.
+    run.driver.latest('a-1')!.die({ code: 1, signal: null });
+    await until(() => reportsTo(run, 'a').length === 2, 'the second ending reaching the parent');
+
+    // Every settle is another chance to re-read the pending message as an instruction. It
+    // is not one: it bought the body that has just died. Suspending the parent onto each of
+    // the two reports it is holding is what makes the settles happen, and waiting for the
+    // answers is what makes them have finished before anything below is read.
+    parent.ask('a:2', 'await', {}, 60_000);
+    await parent.until(() => parent.answers().size === 1, 'the first report reaching the parent');
+    parent.ask('a:3', 'await', {}, 60_000);
+    await parent.until(() => parent.answers().size === 2, 'the second report reaching the parent');
+
+    expect(run.driver.all('a-1')).toHaveLength(2);
+    // **And what is pending still is.** The bound is on how many bodies one message buys,
+    // not on the message, which is still there for the boundary the agent may yet reach.
+    expect(run.store.agent('a-1').mailbox).toEqual([{ from: 'a', content: 'Carry on.' }]);
+  });
+
+  it('gives another body when the parent says so again', async () => {
+    const run = await aPair(['await', 'send']);
+    const parent = run.driver.latest('a')!;
+    const child = run.driver.latest('a-1')!;
+    await parent.until(() => parent.messages().length > 0);
+
+    child.die({ code: 1, signal: null });
+    await until(() => reportsTo(run, 'a').length === 1, 'the first ending reaching the parent');
+
+    parent.ask('a:1', 'send', { to: 'a-1', content: 'Carry on.' });
+    await until(() => run.driver.all('a-1').length === 2, 'the first revival');
+    run.driver.latest('a-1')!.die({ code: 1, signal: null });
+    await until(() => reportsTo(run, 'a').length === 2, 'the second ending reaching the parent');
+
+    // A second decision, which is the only thing that buys a second body. No counter and no
+    // timer: what re-arms it is a parent choosing to spend a turn saying so again.
+    parent.ask('a:2', 'send', { to: 'a-1', content: 'Once more.' });
+    await until(() => run.driver.all('a-1').length === 3, 'the second revival');
+
+    expect((JSON.parse(run.driver.latest('a-1')!.boot) as { owed: boolean }).owed).toBe(true);
+    // Both messages are still queued, in the order they were sent, for the boundary this
+    // body may reach.
+    expect(run.store.agent('a-1').mailbox).toEqual([
+      { from: 'a', content: 'Carry on.' },
+      { from: 'a', content: 'Once more.' },
+    ]);
+  });
+
+  it('counts an agent holding mail it will not be revived for as stopped', async () => {
+    const run = await aPair(['await', 'send']);
+    const parent = run.driver.latest('a')!;
+    const child = run.driver.latest('a-1')!;
+    await parent.until(() => parent.messages().length > 0);
+
+    parent.ask('a:1', 'await', {}, 60_000);
+    await until(() => run.store.agent('a').state.status === 'waiting', 'the parent suspending');
+    child.die({ code: 1, signal: null });
+    await parent.until(() => parent.answers().size === 1, 'the ending reaching the parent');
+
+    parent.ask('a:2', 'send', { to: 'a-1', content: 'Carry on.' });
+    await until(() => run.driver.all('a-1').length === 2, 'the child being given a new body');
+    parent.ask('a:3', 'await', {}, 60_000);
+    run.driver.latest('a-1')!.die({ code: 1, signal: null });
+    await parent.until(() => parent.answers().size === 2, 'the second ending reaching the parent');
+
+    // The parent does nothing further, which is its right. Everything is now waiting or
+    // stopped, and the only thing pending anywhere is a message that will not produce
+    // another body.
+    parent.ask('a:4', 'await', {}, 60_000);
+    await until(() => run.stalls.length > 0, 'the stopped tree being surfaced');
+
+    expect(run.supervisor.stalled).toBe(true);
+    // **Naming the cause, and reaching the report at all.** Without the bound this run
+    // never arrives here: the pending message revives the child forever, and `#cannotMove`
+    // reads that same message as work about to happen every time it is asked.
+    expect(run.stalls.at(-1)).toEqual({ waiting: ['a'], stopped: ['a-1'] });
+  });
+});
+
+/**
  * The stall read, once "cannot move" has to cover an agent with no body.
  *
  * One condition — nothing to act on, and not working in a body — covering three shapes:

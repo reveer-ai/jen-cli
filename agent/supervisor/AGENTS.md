@@ -197,8 +197,38 @@ path does: a failed provisioning leaves the store exactly as it found it.
 what it finds, and this is a judgment rather than an optimisation. Whether to retry a child
 that stopped is the parent's decision — it is why `#ended` reports the ending instead of
 acting on it — and reviving unbidden would move that judgment into this file, where no
-charter can reach it. It would also loop: an agent that dies whenever it is given a body
-would be given one again by every settle, forever, with nobody having asked for any of it.
+charter can reach it.
+
+**Mail-triggering is not on its own what bounds it, and reading it as though it were is the
+mistake this paragraph used to make.** What it rules out is a settle reviving an agent
+nobody asked about. It does not rule out one instruction being re-read as a new one: the
+revival leaves its message pending, so that message is still at the head of the mailbox when
+the new body dies, and `#ended` → `#settle` → `#deliver` arrives back at the same branch and
+boots again. An agent that dies whenever it is given a body is given one forever — with one
+parent message standing behind all of them rather than nobody, which costs the same. Each
+turn of it is a sandbox created, a boot, a model call, and another substrate report posted
+into a parent that is awake and spending a turn on each one. And the stall read stays silent
+throughout, because the message driving the loop reads as work about to happen. Measured on
+the double before it was bounded: 284 bodies in three seconds from a single `Carry on.`
+
+**A revival answers the message that caused it, so a further revival wants a further
+message.** That is the bound, and it is `#revived` — a set of the agents already given a
+body for the mail they are still holding. An id goes in when a body is actually provisioned
+for a bodiless agent, and comes out when anything is posted to that agent, which is a second
+decision buying a second body, or when the revived body reaches a turn boundary, having got
+somewhere. A revival that could not be provisioned takes no mark: no body was made, and
+`#unprovisioned` has just promised the parent the message will be delivered when the agent
+can be provisioned again. There is no counter in it and no timer, and "what is pending stays
+pending" is untouched — the bound is on how many bodies one message buys, not on the
+message.
+
+**The stall read has to agree, or the bound is the same silent stall in a different coat.**
+An agent that will not be revived again is not made able to move by mail sitting in its box,
+so `#cannotMove` reads a marked agent's mailbox as empty exactly as it does an unreachable
+one's. The two marks stay separate because they mean different things to `#unprovisioned`:
+`#unreachable` is "no body and no way to get one" and is cleared by `#settle` on any
+delivery that does not throw, the refused revival included; `#revived` is "already answered
+with a body", which that clearing is not about and must not clear.
 
 ### The report cannot be `#ended`'s wording, and cannot be `onFailure`
 

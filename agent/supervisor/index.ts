@@ -357,10 +357,11 @@ export class Supervisor {
    * It holds down the noise and nothing else: an outage is one message to a parent instead
    * of one per request that settles during it. An id goes in when delivery to it throws an
    * {@link UnprovisionedError} and comes out the moment `#deliver` returns without throwing
-   * — including the early return, which means nothing is queued for it and so nothing is
-   * stuck. Delivery that failed some other way marks nothing, because what the mark means to
-   * the stall read below is "no body and no way to get one", which a store that could not be
-   * written is not a report of.
+   * — including its early returns, neither of which is a provisioning failure: nothing was
+   * queued, or the mail was already answered with a body, and the second of those is
+   * `#revived`'s to report rather than this mark's. Delivery that failed some other way
+   * marks nothing, because what the mark means to the stall read below is "no body and no
+   * way to get one", which a store that could not be written is not a report of.
    *
    * **Deliberately not a fourth status on the record.** In the store it would make
    * "unreachable" something an agent *is*, which needs a way back out that nothing has asked
@@ -371,6 +372,38 @@ export class Supervisor {
    * agent settling is about to wake, so only "we tried and it failed" picks out a stuck one.
    */
   readonly #unreachable = new Set<string>();
+  /**
+   * The agents already given a body in answer to the mail they are still holding.
+   *
+   * **One message buys one body.** Revival leaves the message pending — an agent continuing
+   * an unfinished turn is not at the boundary where a message begins one — so without this
+   * the message that triggered a revival is still at the head of the mailbox when the new
+   * body dies, and `#ended` → `#settle` → `#deliver` reads it as a fresh instruction. An
+   * agent that dies whenever it is given a body is then given one forever, each turn of it
+   * a sandbox created, a boot, a model call and another substrate report posted into a
+   * parent that is awake and spending a turn on each. One parent message, unbounded cost,
+   * and nothing able to say so.
+   *
+   * That is the loop mail-triggering was supposed to prevent, and triggering on mail does
+   * not prevent it on its own: what it rules out is a settle reviving unbidden, not one
+   * instruction being re-read as a new one after every death. **A revival answers the
+   * message that caused it, so a further revival wants a further message** — which is a
+   * bound with no counter and no timer in it, and leaves "what is pending stays pending"
+   * exactly as it was.
+   *
+   * An id goes in when a body is successfully provisioned for a bodiless agent, and comes
+   * out when anything is posted to that agent — a second decision, which buys a second
+   * body — or when the revived body reaches a turn boundary, having got somewhere. Nothing
+   * goes in for a revival that could not be provisioned: no body was made, and
+   * `#unprovisioned` promises the parent its message will be delivered when the agent can be
+   * provisioned again.
+   *
+   * **The stall read needs it for the same reason it needs `#unreachable`.** Mail for an
+   * agent that will not be revived again is not work about to happen either, and a bodiless
+   * agent holding mail nothing will act on is invisible to the backstop without this — the
+   * same silent stall in a different coat.
+   */
+  readonly #revived = new Set<string>();
   /**
    * Everything that changes state, one at a time.
    *
@@ -428,12 +461,14 @@ export class Supervisor {
    * one is armed, and waiting for timers to expire before saying so would delay the
    * diagnosis and change nothing about it.
    *
-   * **Mail for an agent that cannot be reached is not work about to happen.** A pending
-   * message counts here on the grounds that delivery will wake somebody; where delivery is
-   * what failed, that grounds is gone, and counting it anyway reports a tree that has
-   * stopped as a tree that is working — the one outcome this read exists to prevent. So a
-   * marked agent's mailbox is read as empty, and this is the backstop for a parent that was
-   * told its child had no body and did nothing about it.
+   * **Mail that delivering would do nothing with is not work about to happen.** A pending
+   * message counts here on the grounds that delivery will wake somebody. That grounds is
+   * gone where delivery is what failed, and gone again where the message has already been
+   * answered with a body the agent did not survive — see `#revived` — and counting it
+   * anyway in either case reports a tree that has stopped as a tree that is working, the
+   * one outcome this read exists to prevent. So such an agent's mailbox is read as empty,
+   * and this is the backstop for a parent that was told its child had no body and did
+   * nothing about it.
    *
    * **One window makes `working` with no body transient rather than terminal**, and it is
    * this getter's to know about because it is public. `#deliver` saves `working` before it
@@ -468,11 +503,21 @@ export class Supervisor {
    * move, because that is a turn in flight; `working` with no body but with mail can move,
    * because delivery is about to give it one; `working` with no body and nothing pending
    * cannot, because nothing will.
+   *
+   * **Mail already answered with a body does not count either**, for the same reason mail
+   * to an agent nothing can provision does not: delivering it would do nothing. A revival
+   * answers the message that caused it, so the message left pending behind a body that then
+   * died will not produce another one — see `#revived`. Without this clause that agent
+   * reads as work about to happen forever, which is this whole class of silent stall with
+   * one more cause in it. The mark only ever describes a `working` agent with no body,
+   * which is why it is read against that status rather than on its own.
    */
   #cannotMove(id: string): boolean {
     const agent = this.#store.agent(id);
-    const inABody = agent.state.status === 'working' && this.#bodies.has(id);
-    return !inABody && (agent.mailbox.length === 0 || this.#unreachable.has(id));
+    const working = agent.state.status === 'working';
+    const inABody = working && this.#bodies.has(id);
+    const nothingDeliveryWouldDo = this.#unreachable.has(id) || (working && this.#revived.has(id));
+    return !inABody && (agent.mailbox.length === 0 || nothingDeliveryWouldDo);
   }
 
   /**
@@ -927,6 +972,10 @@ export class Supervisor {
    */
   async #turn(id: string, message: string, residency: number): Promise<void> {
     const agent = this.#store.agent(id);
+    // A revived body that reached a boundary got somewhere, so whatever bound was spent on
+    // giving it one is spent history rather than a standing refusal — see `#revived`. The
+    // loop that mark exists to stop is bodies that die without ever reaching here.
+    this.#revived.delete(id);
     await this.#store.save(id, { ...agent, state: { status: 'waiting', request: null } });
     await this.#post(agent.parent, { from: id, content: message });
     if (this.#store.agent(id).mailbox.length === 0) this.#residency(id, residency);
@@ -1303,6 +1352,10 @@ export class Supervisor {
     }
     const agent = this.#store.agent(to);
     if (agent.state.status === 'dismissed') return;
+    // A second decision buys a second body. Everything that reaches an agent arrives here,
+    // so this is the one place the bound in `#revived` is re-armed, and it is re-armed by
+    // the only thing that should: somebody choosing to address the agent again.
+    this.#revived.delete(to);
     await this.#store.save(to, { ...agent, mailbox: [...agent.mailbox, message] });
   }
 
@@ -1400,8 +1453,11 @@ export class Supervisor {
       for (const id of this.#store.ids()) {
         try {
           await this.#deliver(id);
-          // Including `#deliver`'s early return, which means nothing was queued — so
-          // nothing is stuck, and an agent that is reached again is reportable again.
+          // Including `#deliver`'s early returns. Nothing was queued, or what was queued
+          // has already been answered with a body — and neither is this mark's meaning,
+          // which is a body that could not be provisioned. The second case is still a
+          // stopped agent, and `#revived` is what says so to the stall read; clearing here
+          // only means an agent that is reached again is reportable again.
           this.#unreachable.delete(id);
         } catch (error) {
           // **Only a missing body is caught here.** Everything else `#deliver` can throw is
@@ -1462,8 +1518,12 @@ export class Supervisor {
     // revives nothing it was not asked to: an agent whose body ended and that nobody has
     // addressed stays exactly as it is. Making it automatic would move the judgment of
     // whether to retry out of the parent's reasoning and into this file, where no charter
-    // can reach it, and would put an agent that dies whenever it is given a body into a
-    // loop nothing chose to start.
+    // can reach it.
+    //
+    // It is not on its own what keeps an agent that dies whenever it is given a body out of
+    // a loop. Triggering on mail rules out a settle reviving unbidden; the message a
+    // revival leaves pending would still be re-read as a new instruction after every death.
+    // The bound on that is `#revived`, below.
     if (message === undefined) return;
 
     // **An agent with no body gets one when somebody addresses it**, whatever left it
@@ -1484,8 +1544,20 @@ export class Supervisor {
     // existing handling reports it with the message still queued. And there is no double
     // boot behind it — `#settle` visits each id once per pass, and a revived agent holds a
     // body by the time anything looks again.
+    //
+    // **A revival answers the message that caused it, and a further one wants a further
+    // message.** The message stays pending, so without the mark it is still at the head of
+    // this mailbox when the new body dies and reads as a fresh instruction on the way back
+    // through here — one parent message buying bodies forever, at a sandbox and a model
+    // call each, with `#cannotMove` reading the driving message as work about to happen and
+    // staying silent throughout. The mark is what makes the branch bounded; `#revived` is
+    // where the whole of that reasoning is. It is taken only where a body was actually
+    // provisioned, because a revival that could not be is one the parent has been promised
+    // a retry of.
     if (agent.state.status === 'working' && !this.#bodies.has(id)) {
+      if (this.#revived.has(id)) return;
       await this.#boot(id, true);
+      this.#revived.add(id);
       return;
     }
 

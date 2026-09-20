@@ -52,14 +52,22 @@ Everything else follows from that, and most of it is subtraction:
 - **Revival is triggered by mail and by nothing else.** A settle does not walk the run
   reviving anything it finds — a child that died and that nobody has addressed stays as it is.
   Addressing it is the parent's decision and the substrate carries it out; making it automatic
-  would put the retry judgment in code, where no charter can reach it, and would turn an agent
-  that fails on boot into a loop.
+  would put the retry judgment in code, where no charter can reach it.
+- **And a revival answers the message that caused it**, so a further revival wants a further
+  message. Mail-triggering alone does not bound the branch: the revival leaves its message
+  pending, so the same message is re-read as a new instruction after every death, and one
+  parent instruction buys bodies without limit — a sandbox, a boot, a model call and another
+  report to an awake parent each time round, invisible to `stalled` because the message
+  driving it reads as work about to happen. The bound is per-message and carries no counter
+  and no timer, so *what is pending stays pending* is untouched.
 - **`#ended`'s report becomes true and actionable.** It says `terminated` today, which will
   overstate once the agent can be continued. It should say the body ended, carry what the body
   said, and say the work is kept and the agent can be told to carry on.
 - **`stalled` counts an agent that cannot be reached at all.** An agent is unable to move when
   it has nothing to act on *and* is not working in a body — one predicate covering the
-  suspended agent, the unreachable one and the bodiless one together.
+  suspended agent, the unreachable one and the bodiless one together. Mail already answered
+  with a body is not something to act on either, or the bound above would trade the loop for
+  an agent stopped in a way nothing can report.
 - **BREAKING: `onStalled` is handed the stopped agents as well as the waiting ones.** A stall
   caused by a body that ended otherwise reports the agents that are behaving.
 
