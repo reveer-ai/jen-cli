@@ -13,13 +13,21 @@ structural criterion is unaffected.
 ## What you need
 
 - A container runtime, and the image: `docker build --tag jen/agent:latest agent`.
-- A model credential. The records below reach OpenRouter, so `OPENROUTER_API_KEY` in the
+- A model credential. The records below reach OpenRouter, so `OPENROUTER_API_TOKEN` in the
   environment you start the operator from. Any OpenAI-compatible endpoint works — the
   provider is a value on the record and not a commitment in code.
-- For §3 only: `CLAUDE_CODE_OAUTH_TOKEN` in that same environment, which `claude
-  setup-token` mints from a Claude subscription. **It must be a value an environment
-  variable can carry.** `agent-sandbox` forbids a secret reaching a file, inside the sandbox
-  or outside it, so there is no login-file fallback and this is the whole question §3 asks.
+- For §3 only: `CLAUDE_OAUTH_TOKEN` in that same environment, which `claude setup-token`
+  mints from a Claude subscription. **It must be a value an environment variable can
+  carry.** `agent-sandbox` forbids a secret reaching a file, inside the sandbox or outside
+  it, so there is no login-file fallback and this is the whole question §3 asks.
+
+  **The two names each appear twice here and mean different things both times, so check
+  which one you are reading.** The records' `ref` is the variable on *your* machine —
+  `OPENROUTER_API_TOKEN`, `CLAUDE_OAUTH_TOKEN` — and their `name` is the variable inside
+  the sandbox, where `claude` requires `CLAUDE_CODE_OAUTH_TOKEN` exactly. Getting the `ref`
+  wrong fails at creation, in the credential prologue, before any agent runs: an unresolvable
+  reference is refused rather than substituted, so the pass stops at the first record instead
+  of part way through a tree.
 
 Credentials reach an agent by *reference*: the record names a variable, the operator's own
 environment holds the value, and the sandbox writes it onto each process's standard input as
@@ -44,7 +52,7 @@ Write `chief.json`, adjusting the model identifiers to what your provider spells
   "workspace": "/workspace",
   "environment": "jen/agent:latest",
   "tools": ["spawn", "await", "send", "stop", "read", "fs", "exec"],
-  "credentials": [{ "name": "MODEL_API_KEY", "ref": "env:OPENROUTER_API_KEY" }],
+  "credentials": [{ "name": "MODEL_API_KEY", "ref": "env:OPENROUTER_API_TOKEN" }],
   "parent": null
 }
 ```
@@ -167,8 +175,8 @@ its image has:
 ```json
   "charter": "…\n\nYour image provides the `claude` command, run headlessly as `claude -p '<prompt>'`. Its credentials are already in your environment — you never supply one. Check it is there before you rely on it.",
   "credentials": [
-    { "name": "MODEL_API_KEY", "ref": "env:OPENROUTER_API_KEY" },
-    { "name": "CLAUDE_CODE_OAUTH_TOKEN", "ref": "env:CLAUDE_CODE_OAUTH_TOKEN" }
+    { "name": "MODEL_API_KEY", "ref": "env:OPENROUTER_API_TOKEN" },
+    { "name": "CLAUDE_CODE_OAUTH_TOKEN", "ref": "env:CLAUDE_OAUTH_TOKEN" }
   ]
 ```
 

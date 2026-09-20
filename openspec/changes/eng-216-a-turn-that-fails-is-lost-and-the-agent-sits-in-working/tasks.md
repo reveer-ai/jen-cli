@@ -163,3 +163,14 @@ keeps answering.
   in it, concurrently, both resolving. A real race rather than a stubbed reply, so what is
   tolerated is what the daemon really says; confirmed red three times out of three against the
   driver without the tolerance.
+- [x] 10.11 `agent/LIVE-PASS.md` sent the live pass at two credentials that do not exist on
+  the machine it runs on: the records' `ref`s read `env:OPENROUTER_API_KEY` and
+  `env:CLAUDE_CODE_OAUTH_TOKEN`, and what is set is `OPENROUTER_API_TOKEN` and
+  `CLAUDE_OAUTH_TOKEN`. Same defect as the rest of group 8 — the document 8.1 hands
+  test-task disagreeing with reality — and it predates this change only in the sense that
+  nobody had run it from this environment. An unresolvable `ref` is refused at creation, in
+  the credential prologue, so it does not degrade into a partial pass: it stops at the first
+  record. Correct both `ref`s, keep both `name`s, since `claude` inside the sandbox requires
+  `CLAUDE_CODE_OAUTH_TOKEN` exactly and the `name`/`ref` split is what expresses that — and
+  say so where the two names sit next to each other, because that is the line a reader
+  skims.
