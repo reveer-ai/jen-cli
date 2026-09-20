@@ -242,6 +242,50 @@ exit where it has one (its stderr says more about why than the pipe does), and a
 rejection where the subprocess exited *zero* — because a command that ran without the
 credentials it was sent looks exactly like one that had them.
 
+## A body's channel is two pipes and one thread, and both halves of that bite
+
+The supervisor holds tens of bodies, and each one is a subprocess whose standard input,
+standard output and standard error are pipes with finite buffers. Behind them is a
+single-threaded process. Everything below follows from those two sentences, and none of it
+was visible until a run with real models produced enough output to fill anything.
+
+**A stream nobody reads stops the process, and stops its other streams with it.** This is the
+one that cost a run. The supervisor read a body's standard output and left its standard error
+with no reader at all, which is fine until a body writes more to it than the pipe holds —
+after which that body blocks *inside a write*, forever. It does not fail, does not exit, does
+not read its input and does not take a step. Its container is up, it uses no processor, and
+its stored state still says `working`, which is exactly what an agent thinking hard looks
+like. And because a container runtime carries a process's two outputs over one connection and
+splits them at this end, the blocked standard error stops the standard output too, so the
+supervisor sees nothing further on the channel either. A 20-line probe is enough to see it:
+run `sh -c 'printf before; …1 MiB to stderr…; printf after'` through the driver, read stdout
+only, and `after` never arrives.
+
+Every stream is therefore read, and `sandbox/index.ts` says so as a requirement on the
+caller rather than leaving it to be rediscovered. What is read from standard error is kept as
+a bounded tail and handed to the parent in the termination report, because a runtime that
+could not read its boot frame writes the reason there and nowhere else — and a parent
+choosing between retrying, replacing and escalating was otherwise choosing on `exit 1`.
+
+**A write to a body may never come back, so nobody waits for one.** The same single thread
+means a body that has stopped reading is a body a `send` to does not return from — not as a
+rejection, which is handled, but not at all. `#say` used to be awaited from inside the
+supervisor's serial queue, which every state transition in the run passes through, so one
+body in that state stopped *every* agent: no delivery anywhere, no frame read from any other
+body, nothing written to any transcript, and no stall reported, because a stall is only
+reported when every agent is `waiting` and these all said `working`. Nothing was ever owed by
+the wait — the result was discarded either way, since what a body does with what it is sent
+is not something the send can report — so `#say` now queues per body and returns, which keeps
+the order and costs nothing.
+
+**Pipe writes block on Linux and do not on macOS**, which is why the substrate's own tests
+had to be run against containers to see any of this. Node writes to a pipe synchronously on
+Linux and asynchronously on macOS, so a runtime inside a container blocks where the same code
+on the host quietly buffers — and the double in `supervisor/double.ts` cannot model either,
+because its streams are objects that accept whatever is written. Anything about backpressure
+is `containers.test.ts`'s to hold, and anything about *waiting* can be held in the double by
+making a `send` that never settles, which is what `Peer.deaf` is.
+
 ## `close` on a child is not the end of its process group
 
 `exec` spawns `detached` so the child leads a process group, and terminates by signalling
@@ -719,3 +763,99 @@ rather than assuming either way — one completion, then the same follow-up with
 the extension, comparing `usage.prompt_tokens`. If a provider begins counting them, replay
 stops being free and the per-turn growth becomes a prompt-cache and cost question worth its
 own decision.
+
+## The substrate has an image now, and a third suite that needs one
+
+`agent/Dockerfile` is the environment `aRecord`'s `jen/agent:latest` has been naming since
+the beginning. It is built locally from `agent/` and pushed to no registry, which is what
+keeps `agent-substrate`'s exclusion of this directory from the repository's package intact —
+if it is ever pushed, that clause fires and the exclusion has to be revisited.
+
+```bash
+docker build --tag jen/agent:latest agent
+npx vitest run --config agent/vitest.config.ts acceptance.test.ts
+```
+
+The tier builds the image itself in `beforeAll`, so the command above is only for building
+it by hand. **Three suites now need a running container runtime**, not two — `acceptance.test.ts`
+joins `sandbox/docker.test.ts` and `supervisor/containers.test.ts`, and it is the only one of
+the three that needs the image.
+
+### The build check cannot be `--help`, and that is a property of this entry point
+
+`jen-agent` reads its boot frame from standard input and takes nothing from argv, so any
+check that starts it without closing its input waits for a frame that never comes — a build
+that **hangs** rather than one that fails. The check is `jen-agent < /dev/null`, required to
+exit non-zero with the boot frame's own error, which also proves the shebang resolves, that
+Node strips the types, and that `openai` is installed. `command -v` would notice none of
+that: verified by building with `node_modules/openai` removed, where a presence check passes
+and this one fails naming it.
+
+### The assistant is the image's and must never be the manifest's
+
+`agent-workspace-tools` forbids any part of the substrate naming a particular assistant, and
+a dependency entry in `agent/package.json` would be the substrate naming one in the plainest
+way there is. It is installed in the Dockerfile at a pinned version instead, which is also
+what keeps the choice reversible — replacing it, or providing none, changes an image and no
+source. `manifest.test.ts` holds both halves.
+
+### A run's workspaces outlive the run, and removing them is yours
+
+Nothing in the substrate deletes a workspace. `destroy` ends a body, `destroyAll` sweeps
+bodies, dismissal keeps the workspace, and `shutdown` is the ordinary way to stop for the
+day — a run is ended for every reason including that one, and its agents' work is sitting in
+their workspaces waiting to be resumed from. `releaseWorkspace` exists on the driver and
+`policy.test.ts` asserts the supervisor's source never names it.
+
+So **a tree you run by hand leaks its workspaces to you**, and there is no verb for it —
+giving the operator one was considered for ENG-199 and cut, because no criterion asks for it
+and the substrate's first workspace-deleting path is a thing to be slow about. They are
+labelled, so they are findable:
+
+```bash
+docker volume ls --filter label=jen.run=<run> --format '{{.Name}}'
+docker volume ls --filter label=jen.agent=<agent id> --format '{{.Name}}'
+```
+
+`acceptance.test.ts` removes its own in `afterAll` for exactly this reason. If you run the
+operator by hand, that is on you.
+
+### A failed image build is invisible unless the build itself is asked
+
+`jen/agent:latest` is left on the machine by every green run of `acceptance.test.ts`, and
+nothing anywhere removes it — so **whether the tag resolves says nothing about whether the
+Dockerfile in the working tree builds.** A setup that asked `docker image inspect` after a
+failed build would find yesterday's image and run all five tests green against it: green, and
+about nothing on disk. The build's own exit is the answer, and it is the only one. `run()`
+rejects on a non-zero exit, so the build is wrapped in a `try` and the error's `stderr` is
+what the failure carries. Nothing else in the repository ever builds this image, so this tier
+is the only thing that would ever notice.
+
+### A container reaches the host at `host.docker.internal`, on Docker Desktop only
+
+`acceptance.test.ts` stands a scripted model up on the host and points each record's
+`baseURL` at it, which is the seam `model.ts` describes rather than a branch added for a
+test. Reaching it from inside a container relies on `host.docker.internal`, which Docker
+Desktop provides and Linux Docker does not. **Teaching the driver `--add-host` was rejected**:
+it would make every container the substrate ever creates carry a concern that exists for a
+test, and a flag added for a suite is a flag every agent then runs under. So the tier probes
+it in `beforeAll` and fails naming it, and running the tier on Linux needs that configured
+some other way. Recorded as a gap rather than fixed.
+
+A live pass — real models, real charters, an agent that decides for itself to delegate, and
+an assistant authenticating inside a sandbox — is a person's job and is written down in
+[`LIVE-PASS.md`](LIVE-PASS.md).
+
+### The operator ends when its input ends, and that is the whole of its shutdown
+
+`jen-operator <store-root> <run> <record.json> [opening]` reads one line at a time and
+delivers each to the root by the path a parent's message takes. **The end of its input is a
+person ending the run**, so a shutdown follows immediately — which means piping a single
+line into it says the thing and then ends the run, rather than waiting to see an answer. That
+is correct and it surprises: use a terminal, or hold the input open, if you want to watch.
+
+Nothing on the command line says whether to begin or to resume, and the opening message is
+**not** delivered again to a run that already exists. Resuming is done by re-running the
+command that started it — that is the point of nothing on the line saying which — so
+honouring the opening on a resume would put a duplicate instruction into the root's mailbox
+every time, at the moment after a crash when a person is least likely to notice it.

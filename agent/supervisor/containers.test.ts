@@ -366,3 +366,63 @@ describe('a run killed with containers live is swept, and resumes', () => {
     }
   }, 300_000);
 });
+
+/**
+ * The channel to a body is two pipes with finite buffers, and the process behind them is
+ * one thread.
+ *
+ * Nothing in the double tier can hold this. `Peer` is objects: its standard output accepts
+ * whatever is written whether or not anybody reads it, and its standard error is a stream
+ * nothing ever puts a byte in — so an unread pipe, which is a thing only a real one can be,
+ * is invisible to every other test in this directory. That is exactly how the substrate
+ * shipped a run that froze and said nothing about it.
+ *
+ * It hangs forever against the supervisor as it was, rather than failing, which is the shape
+ * of the bug: the supervisor is not wrong about anything, it is waiting for a writer that is
+ * waiting for it. The timeout is what turns that into a red test.
+ */
+describe('a body that writes more than a pipe holds is not left waiting on its reader', () => {
+  /** Well past any pipe buffer on any platform, written before the agent does anything else. */
+  const FLOOD = 512;
+
+  /**
+   * An agent whose standard error nobody reads is an agent that stops.
+   *
+   * A container runtime carries a process's two output streams over one connection and
+   * splits them at this end, so the moment either of this side's pipes fills, *both* stop
+   * moving. The supervisor read one of them and left the other with no reader at all — and
+   * the process behind it blocks in a write, mid-turn, holding its container, using no CPU,
+   * with its stored state still saying `working` and nothing anywhere able to say otherwise.
+   */
+  it('reads a body that talks on its standard error, and tells its parent what it said', async () => {
+    const { store } = await aStore();
+    const id = `${RUN}-noisy`;
+
+    const noisy = `
+IFS= read -r boot
+i=0
+while [ $i -lt ${FLOOD} ]; do printf '%512s' '' >&2; i=$((i+1)); done
+while IFS= read -r line; do
+  case "$line" in
+    *'"t":"message"'*)
+      printf '%s\\n' '{"t":"event","event":{"type":"usage","at":"2026-01-01T00:00:00.000Z","in":1,"out":1,"model":"sh"}}'
+      printf '%s\\n' '{"t":"turn","message":"done","residency":0}'
+      ;;
+  esac
+done
+`;
+    const heard: string[] = [];
+    const supervisor = new Supervisor({
+      store,
+      driver: new DockerSandboxDriver({ run: RUN }),
+      command: ['sh', '-c', noisy],
+      onMessage: (message) => heard.push(message.content),
+    });
+
+    await supervisor.add(aPeerRecord(id, 'writes a quarter of a megabyte to standard error first'), 'Begin.');
+    await until(async () => heard.length > 0, 'the agent finishing its turn after flooding standard error');
+
+    expect(heard).toEqual(['done']);
+    await supervisor.shutdown();
+  }, 300_000);
+});

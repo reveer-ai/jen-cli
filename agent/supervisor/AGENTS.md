@@ -250,6 +250,29 @@ calls `#add` and not `add` for exactly this reason.
 The store assumes one writer per run as a consequence, and `state.json.writing` is a single
 predictable name rather than a unique one because of it.
 
+### `#shutdown` is on this queue, and the queue outlives it
+
+Which is the part that catches you: **the ending is a task like any other, so everything
+already queued behind it still runs afterwards, over a run that is finished.** A residency
+timer that has fired is past `#disarm`; a frame read off a body's channel a moment before
+that body was destroyed is already in the queue; `add()` and `tell()` queue from outside the
+supervisor and know nothing about it. The shutdown's walk is a sync and a destroy per body —
+seconds each against a real daemon — so the window is wide by construction rather than a
+race you have to be unlucky to hit.
+
+What those late tasks find is the shutdown's *own* work. Every message it put back is at the
+head of a `waiting` agent's mailbox, so a settle from one of them reads a run with work to do
+and boots a fresh sandbox for an agent nobody is coming back to — a container outliving its
+run, through the action a person takes to stop for the day.
+
+`#closing` is the bound and `#settle` is where it is spent, once, rather than at each of the
+eight callers that end in one. **If you add a path that provisions without settling, it needs
+its own** — `resume` is the only one today, and it is exempt because it is a caller
+deliberately taking a run up rather than work arriving late. The corresponding trap when
+writing a test: a body destroyed inside `beforeDestroy` holds the whole walk, which is how
+both tests in `suspend.test.ts`'s closing-run block open this window on purpose instead of
+racing for it.
+
 ## One sandbox at a time per agent, assumed and unenforced
 
 `agent/AGENTS.md` records that two `create` calls for the *same* agent would each believe
@@ -327,9 +350,13 @@ and the mark is the whole of what tells them apart.
 **Agent-authored content is escaped into that position**: a leading `[` becomes `\[` before
 the mark is prepended. A child that opens its report with `[substrate] ...` — quoting a message
 it was itself sent, which is how a confused agent reaches this rather than a hostile one —
-would otherwise be read by its parent as a death. The substrate's own report is not
-agent-authored and is not escaped, which is why the escape is applied at `render()` rather than
-wherever a message is posted.
+would otherwise be read by its parent as a death. The substrate's own report is not escaped,
+which is why the escape is applied at `render()` rather than wherever a message is posted.
+
+**What makes that safe is the position, not the authorship.** A termination report carries the
+tail of the dead body's standard error, so part of it *is* agent-authored — but always behind
+`<id> terminated: `, and `unmarked` guards position 0 alone. Widening the escape past that
+position would have to revisit the unescaped branch in `render()` rather than keep it.
 
 **A mark-shaped string in the middle of a message is deliberately not escaped.** Escaping every
 occurrence mangles any message that legitimately discusses the substrate's output, including a
@@ -454,3 +481,32 @@ root whose message went to an `onMessage` nobody is reading, which is the more l
 while the interface is a line on standard error. It is the *caller* that has to tell the two
 apart, and it can: the report names who is waiting, and a root among them means ask the person.
 Whoever builds the interface this section says is still undecided owns that distinction.
+
+### What the unbounded retry costs, measured
+
+The question the section above defers to ENG-199's run, answered by that run. Measured
+against a driver pointed at a `docker` that does not exist, with every agent in the tree
+holding mail it cannot be woken for:
+
+| tree | attempts while building it | attempts idle for 3s | one settle afterwards |
+|---|---|---|---|
+| 10 agents | 110, over 1.4s | **0** | 10 attempts, 138ms |
+| 30 agents | 930, over 11.4s | **0** | 30 attempts, 378ms |
+
+**Nothing happens while nothing happens**, which is the half that decides it. There is no
+timer anywhere here: `#settle` runs on `add`, `tell`, a turn ending, an `await`, a `send`, a
+`stop`, a body ending, and `resume()`, and on nothing else. A tree that has stopped against a
+dead daemon costs exactly zero until somebody does something. So there is no hot loop to
+bound, and a backoff would be a constant slowing down a thing that is not running.
+
+The cost per event is one failing `create` per agent with mail — about 13ms each, which is
+what a process that cannot be started costs — and the one number worth knowing is the
+**doubling**, which belongs to the settle loop rather than to the retry. A pass that produces
+a new report walks the tree again after posting it, so a settle over a *newly* unreachable
+tree costs two attempts per agent rather than one. Building a tree of 30 that way is
+2 × (1+…+30) attempts, quadratic in the size of the tree, and it is paid while a person is
+watching a tree fail to start rather than in the background.
+
+None of that is a reason for an attempt ceiling or an unreachable state to park an agent in,
+and both would still be policy in code. If this ever does need bounding, the thing to bound
+is the second walk — which is a settle question and not a retry one.
