@@ -1081,3 +1081,116 @@ describe('an agent that cannot be reached at all is counted as stopped', () => {
     expect(run.stalls.at(-1)).toEqual({ waiting: ['a'], stopped: ['a-1'] });
   });
 });
+
+/**
+ * What a body that ends by itself leaves behind, which has to be nothing.
+ *
+ * `#ended` and `#suspend` are the two places a body leaves `#bodies`, and until ENG-216's
+ * live pass only one of them destroyed the sandbox. That went unseen because it was almost
+ * unreachable: a turn that threw used to leave the runtime alive-but-idle, so `#ended` never
+ * ran and the body sat in `#bodies` where a shutdown would suspend it. Giving the runtime a
+ * single exit path turned *hung but tracked* into *exited and orphaned*, and at the rate this
+ * change is about — a 429 past the SDK's retries — that is a container leaked per provider
+ * error, each holding a keepalive that will sleep until the daemon is restarted.
+ *
+ * The tier said nothing, at 477 green, because nothing in it asked what was left running.
+ */
+describe('a body that ends leaves no sandbox behind, whichever way it ended', () => {
+  it('releases the container of a body that died, and of every body after it', async () => {
+    const run = await aPair(['await', 'send']);
+    const parent = run.driver.latest('a')!;
+    const child = run.driver.latest('a-1')!;
+    await parent.until(() => parent.messages().length > 0);
+
+    child.wrote('Connection error.\n');
+    child.die({ code: 1, signal: null });
+    await until(() => reportsTo(run, 'a').length === 1, 'the ending reaching the parent');
+
+    // **Counted the way the live pass counted it**: what is still running, not what was
+    // reported. Three reports and three live containers is exactly the shape that passed.
+    expect(run.driver.live.map((peer) => peer.agent)).toEqual(['a']);
+
+    // And it stays true across the revival path, which is where a parent that keeps
+    // answering turns one leak into one per message.
+    parent.ask('a:1', 'send', { to: 'a-1', content: 'Try that again.' });
+    await until(() => run.driver.all('a-1').length === 2, 'the child being given a new body');
+    run.driver.latest('a-1')!.die({ code: 1, signal: null });
+    await until(() => reportsTo(run, 'a').length === 2, 'the second ending reaching the parent');
+
+    expect(run.driver.all('a-1')).toHaveLength(2);
+    expect(run.driver.live.map((peer) => peer.agent)).toEqual(['a']);
+  });
+
+  /**
+   * The return `#ended` takes before it reports anything, and the reason the destroy is
+   * above every one of them.
+   *
+   * An agent that spoke before its body ended is `waiting`, so this is not a death and
+   * nothing is delivered to its parent — but the container is as orphaned as any other, and
+   * a fix placed beside the report would have missed it.
+   */
+  it('releases the container of a body whose agent had already spoken', async () => {
+    const run = await aPair();
+    const child = run.driver.latest('a-1')!;
+    await child.until(() => child.messages().length > 0);
+
+    child.answered('Looked. Nothing to report.');
+    await until(() => run.store.agent('a-1').state.status === 'waiting', 'the child reaching a boundary');
+
+    child.die({ code: 0, signal: null });
+    await until(() => !run.driver.live.includes(child), 'the container being released');
+
+    // Not a death: its parent is told nothing, which is what it was told before this change.
+    expect(reportsTo(run, 'a-1')).toEqual([]);
+    expect(run.store.agent('a-1').state).toEqual({ status: 'waiting', request: null });
+  });
+
+  /**
+   * A destroy that fails is the one case the sweep exists for, and it is also the case that
+   * must not be silent.
+   *
+   * There is no caller to fail and no outcome to report it in, so the alternative to
+   * `onFailure` is a container held for the rest of the run with nobody able to say so —
+   * which is this task's own shape. The report to the parent still goes out, because the
+   * destroy's failure is the supervisor's trouble rather than the parent's.
+   */
+  it('reports a destroy it could not do, and sweeps it at shutdown', async () => {
+    const run = await aPair(['await', 'send']);
+    const parent = run.driver.latest('a')!;
+    const child = run.driver.latest('a-1')!;
+    await parent.until(() => parent.messages().length > 0);
+
+    // Every sandbox this child is given from here refuses to be destroyed. The one it is
+    // already in was made before this, so the refusal wants the revival's body.
+    const create = run.driver.create.bind(run.driver);
+    run.driver.create = async (request: SandboxRequest): Promise<Sandbox> => {
+      const sandbox = await create(request);
+      if (request.id !== 'a-1') return sandbox;
+      return {
+        exec: async (command, options) => sandbox.exec(command, options),
+        destroy: async () => {
+          throw new SandboxError('no daemon');
+        },
+      };
+    };
+
+    child.die({ code: 1, signal: null });
+    await until(() => reportsTo(run, 'a').length === 1, 'the ending reaching the parent');
+    parent.ask('a:1', 'send', { to: 'a-1', content: 'Try that again.' });
+    await until(() => run.driver.all('a-1').length === 2, 'the child being given a new body');
+
+    const stubborn = run.driver.latest('a-1')!;
+    stubborn.die({ code: 1, signal: null });
+    await until(() => run.failures.length > 0, 'the destroy being reported');
+
+    expect(run.failures.at(-1)?.agent).toBe('a-1');
+    expect(String((run.failures.at(-1)?.error as Error).message)).toContain('no daemon');
+    // Held, because nothing could end it — and out of `#bodies`, so the shutdown loop cannot
+    // reach it either. The sweep is what is left.
+    expect(run.driver.live).toContain(stubborn);
+
+    await run.supervisor.shutdown();
+    expect(run.driver.sweeps).toBe(1);
+    expect(run.driver.live).toEqual([]);
+  });
+});

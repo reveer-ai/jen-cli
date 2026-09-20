@@ -104,6 +104,12 @@ const DELIVER = 'while IFS= read -r line; do [ -z "$line" ] && break; export "$l
  */
 const VARIABLE_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
+/**
+ * The daemon's word for a container that is on its way out, which is not a destroy that
+ * failed. See `#remove`, where it is the whole of the exception.
+ */
+const REMOVING = /removal of container .+ is already in progress/;
+
 /** A started subprocess: its output as it is produced, what it still takes, and its ending. */
 export interface Started {
   stdout: Readable;
@@ -405,7 +411,7 @@ export class DockerSandboxDriver implements SandboxDriver {
     );
     const ids = found.stdout.split('\n').map((line) => line.trim()).filter((line) => line !== '');
     if (ids.length === 0) return;
-    await this.#must(['rm', '--force', ...ids], `ending the sandboxes of ${this.#run}`);
+    await this.#remove(ids, `ending the sandboxes of ${this.#run}`);
   }
 
   /**
@@ -453,7 +459,7 @@ export class DockerSandboxDriver implements SandboxDriver {
        * stopped rather than waited for.
        */
       destroy: async () => {
-        await this.#must(['rm', '--force', name], `destroying the sandbox ${name}`);
+        await this.#remove([name], `destroying the sandbox ${name}`);
       },
     };
   }
@@ -521,6 +527,34 @@ export class DockerSandboxDriver implements SandboxDriver {
     } catch (error) {
       throw error instanceof SandboxError ? error : this.#unreachable(error);
     }
+  }
+
+  /**
+   * `rm --force`, and the one refusal that is not a failure.
+   *
+   * `--force` is chosen so that destroying is idempotent — a sandbox already gone exits zero,
+   * because an ordinary teardown and a sweep can both reach the same one. **A removal already
+   * under way is that same fact seen a moment earlier**, and the daemon reports it as an
+   * error: `removal of container <name> is already in progress`, exit 1. Treating that as a
+   * failure makes idempotence hold everywhere except the narrow window it exists for.
+   *
+   * It is reachable outside a race between this driver's own callers: anything else removing
+   * a container — a person at a terminal, a test tier sweeping by label, the runtime's own
+   * reaper — puts a destroy here in exactly this position. ENG-216 met it when a body's
+   * ending destroyed a container a test had just removed by hand, and reported a supervisor
+   * that could not carry on over a container that was already going away.
+   *
+   * **Every line has to be one of these, not merely one of them.** A sweep passes several
+   * names in one call, where a genuine failure and a removal under way would arrive together
+   * and tolerating the message would hide the failure beside it.
+   */
+  async #remove(names: string[], what: string): Promise<void> {
+    const done = await this.#collect(['rm', '--force', ...names]);
+    if (done.code === 0) return;
+    const complaints = done.stderr.split('\n').map((line) => line.trim()).filter((line) => line !== '');
+    if (complaints.length > 0 && complaints.every((line) => REMOVING.test(line))) return;
+    const how = done.signal ?? `exit ${done.code}`;
+    throw new SandboxError(`${what} failed (${how}): ${done.stderr.trim().slice(0, 500)}`);
   }
 
   /** Run to completion, and turn a non-zero exit into an error naming what failed. */

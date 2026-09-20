@@ -479,6 +479,36 @@ describe('the failure modes are defined', () => {
     await expect(subject.releaseWorkspace(agent.id)).resolves.toBeUndefined();
   });
 
+  /**
+   * The narrow window `--force`'s idempotence does not cover on its own.
+   *
+   * A container already gone exits zero; one *going* is refused, `removal of container … is
+   * already in progress`, exit 1. Anything else removing a sandbox puts a destroy here in
+   * that position — a person at a terminal, a tier sweeping by label, or, in ENG-216, a body
+   * whose ending destroyed a container a test had just removed by hand, which was reported
+   * as a supervisor that could not carry on over a container that was already going away.
+   *
+   * Two destroys at once rather than a stub of the daemon's reply, so what is tolerated is
+   * whatever the daemon really says. A container with a process running in it takes long
+   * enough to remove that the second lands inside the first; if it lands after, it takes the
+   * already-gone path above and the assertion holds either way.
+   */
+  it('succeeds when a removal of the sandbox is already under way', async () => {
+    const subject = driver();
+    const agent = request();
+    const sandbox = await subject.create(agent);
+
+    const working = await sandbox.exec(['sh', '-c', 'while :; do sleep 1; done']);
+    const drained = Promise.all([text(working.stdout), text(working.stderr)]);
+
+    await expect(Promise.all([sandbox.destroy(), sandbox.destroy()])).resolves.toEqual([undefined, undefined]);
+
+    await drained;
+    expect(await lines('ps', '-a', '--filter', `label=jen.agent=${agent.id}`, '--format', '{{.Names}}')).toEqual([]);
+
+    await subject.releaseWorkspace(agent.id);
+  });
+
   it('stops a sandbox whose process is still running', async () => {
     const subject = driver();
     const agent = request();

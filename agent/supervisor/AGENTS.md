@@ -281,6 +281,33 @@ workspace is the reversible choice and releasing it is not. `policy.test.ts` rea
 for that, because a sweep that released workspaces would pass every assertion about ending
 bodies.
 
+### A body leaves `#bodies` in two places, and both destroy its sandbox
+
+`#suspend` and `#ended`. The map is the only handle anything holds on a running container,
+so the `delete` and the `destroy` belong to the same act: whichever of the two takes the body
+out has to be the one that ends it, because after that line nothing else can.
+
+In `#ended` the destroy goes **above** the early returns rather than beside the report it
+sends. Three of its paths never reach that report — an intended ending, a shutdown, and an
+agent that had already spoken and is `waiting` — and each of those is a container.
+
+It is the one destroy that reports its failure, through `onFailure`. `#suspend`'s is
+swallowed because a suspension has a caller and an outcome; this has neither, so a destroy
+that fails here is a container held for the rest of the run with nobody in a position to
+say so.
+
+**A container whose exec died is still up.** PID 1 in a sandbox is the keepalive, so a body
+that ends leaves `docker events` showing an `exec_die` and no `die`, no `kill`, no `destroy`
+— a container idling on `sleep 3600` that reads as healthy. That is why the live pass found
+this and the suite did not: three failed turns, three ending reports, three containers still
+`Up` at the end of a run that exited `0`.
+
+`#shutdown` ends with a `destroyAll()` sweep for the same reason it cannot be the only
+answer: it walks `#bodies`, which can only hold what nothing has already dropped. The sweep
+is the backstop for the destroy that failed, and it is swallowed — a shutdown must not fail
+through the action a person takes to stop for the day, and whatever it is cleaning up was
+already reported when its own destroy failed.
+
 ## No period of the supervisor's own
 
 Residency is the agent's number, carried on the frame it suspends with. **There is no

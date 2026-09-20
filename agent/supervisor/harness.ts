@@ -30,7 +30,9 @@ import type { AgentRecord } from '../record.ts';
  * resumed" — `owed` is set for an ordinary delivery to a dormant agent too.
  *
  * Its charter is how a test tells one agent from another: `STAY` asks for its body to be
- * kept, `HOLD` goes quiet mid-turn and never answers, anything else finishes its turn.
+ * kept, `HOLD` goes quiet mid-turn and never answers, `DIE` ends the way ENG-216 made a
+ * runtime end on a turn it cannot complete — the reason on standard error and a non-zero
+ * exit, with no answer — and anything else finishes its turn.
  *
  * **Every record driving it has to grant what its script calls.** `STAY` raises an `await`,
  * and the supervisor refuses a request the caller's record does not name — while this peer
@@ -41,7 +43,7 @@ import type { AgentRecord } from '../record.ts';
 export const SHELL_PEER = `
 IFS= read -r boot
 mode=GO
-case "$boot" in *HOLD*) mode=HOLD ;; *STAY*) mode=STAY ;; esac
+case "$boot" in *HOLD*) mode=HOLD ;; *STAY*) mode=STAY ;; *DIE*) mode=DIE ;; esac
 echo started >> /workspace/history
 case "$boot" in
   *'"owed":true'*)
@@ -59,6 +61,10 @@ while IFS= read -r line; do
       printf '%s\\n' '{"t":"event","event":{"type":"usage","at":"2026-01-01T00:00:00.000Z","in":1,"out":1,"model":"sh"}}'
       if [ "$mode" = HOLD ]; then
         continue
+      fi
+      if [ "$mode" = DIE ]; then
+        echo 'Connection error.' >&2
+        exit 1
       fi
       if [ "$mode" = STAY ]; then
         printf '%s\\n' '{"t":"request","id":"r1","kind":"await","input":{},"residency":60000}'

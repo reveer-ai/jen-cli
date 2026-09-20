@@ -620,6 +620,24 @@ export class Supervisor {
   async #shutdown(): Promise<void> {
     this.#closing = true;
     for (const id of [...this.#bodies.keys()]) await this.#suspend(id);
+
+    // **The sweep is here because the loop above cannot be the whole of it.** It walks
+    // `#bodies`, which can only ever hold what nothing has already dropped — and `#ended`
+    // drops every body that ends on its own. Each of those destroys its own sandbox, so on
+    // the ordinary path this finds nothing; what it is for is the one that failed, where
+    // the alternative is a container held until some later run of the same name.
+    //
+    // **It ends bodies and releases no workspace** — see {@link SandboxDriver.destroyAll},
+    // where that distinction is held — so a run stopped for the day resumes from everything
+    // it had.
+    //
+    // **Swallowed, and this is the one place that is right.** A shutdown must not fail
+    // through the action a person takes to stop for the day, which is the argument
+    // `#suspend`'s store write already carries; and what this cleans up was reported when
+    // its own destroy failed, so a failure here is a second account of a leak already said
+    // once rather than a diagnosis going missing.
+    await this.#driver.destroyAll().catch(() => {});
+
     await this.#store.close();
   }
 
@@ -811,6 +829,31 @@ export class Supervisor {
     if (this.#bodies.get(id) !== body) return;
     this.#disarm(id);
     this.#bodies.delete(id);
+
+    // **Dropping the body from the map is what makes the container this call's to release,
+    // and here is the only place left that can.** `#shutdown` walks `#bodies`, so the line
+    // above has just put this one out of its reach; nothing else holds a handle on it. The
+    // rule the two are easiest to read as one is: the two places that take a body out of
+    // `#bodies` are the two places that destroy its sandbox, and this is the other one.
+    //
+    // **Above every return below it, and that is the point rather than an ordering detail.**
+    // A body whose agent already reported ends `waiting` and returns at the status guard;
+    // an intended ending and a shutdown return at the line after this. Each of those is a
+    // container, and the leak is not specific to the ending this method reports on.
+    //
+    // **What is left running is not idle.** A sandbox's PID 1 is the keepalive, so the exec
+    // dying leaves a container up and sleeping — no exit to notice, nothing in `docker
+    // events` but the `exec_die`. `destroyAll()` sweeps by the run's label and would reap
+    // it, but only on a *later* run of the same name, which is not a lifetime.
+    //
+    // **Reported rather than swallowed**, unlike {@link Supervisor.#suspend}'s. A suspension
+    // has a caller and an outcome; this has neither, so a destroy that fails here is a
+    // container held for the rest of the run with nobody in a position to notice — the
+    // supervisor's own trouble, in the exact sense {@link SupervisorOptions.onFailure} is
+    // for, and nothing an agent can act on. `#failed` never rethrows, so the report below
+    // still goes out.
+    await body.sandbox.destroy().catch((error: unknown) => this.#failed(id, error));
+
     if (body.intended === true || this.#closing) return;
 
     const agent = this.#store.agent(id);

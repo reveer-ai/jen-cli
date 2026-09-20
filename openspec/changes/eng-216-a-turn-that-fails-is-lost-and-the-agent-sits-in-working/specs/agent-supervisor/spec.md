@@ -52,6 +52,33 @@ An agent that is working **and holds a body** SHALL NOT be given another and SHA
 - **THEN** the condition is reported to its parent
 - **AND** the message is still pending, and the agent is unchanged
 
+### Requirement: A body that ends releases the container it was running in
+
+The supervisor SHALL end the container of every body it stops holding, whether that body was torn down as part of a suspension or ended on its own, and whether or not its ending is reported to anybody.
+
+Until this change a body that ended on its own was barely reachable: a turn that threw left its runtime alive but idle, so the supervisor went on holding the body and a shutdown tore it down. Giving the runtime a single exit path makes the ending ordinary, and an ending the supervisor does not act on leaves a container running on a keepalive with nothing holding a handle on it — one per provider error, at the rate this change exists to handle.
+
+Releasing the container SHALL NOT release the agent's workspace, and SHALL NOT alter the agent's state: the report to the parent says the agent's work is kept and can be carried on, and that has to remain true of an agent whose container was ended.
+
+**A release that fails SHALL be surfaced to the human**, because there is no caller to fail and no outcome to carry it: a container held for the rest of the run is the supervisor's own trouble and nothing an agent can act on. It SHALL NOT prevent the ending from being reported to the parent.
+
+A shutdown SHALL additionally end every container belonging to the run, rather than only those it is still holding bodies for, so that a release that failed is not held until some later run. That sweep SHALL NOT prevent a shutdown from completing.
+
+#### Scenario: A body that fails its turn takes its container with it
+
+- **WHEN** an agent's body ends on its own and its parent is told
+- **THEN** no container belonging to that agent is running
+
+#### Scenario: A body whose agent had already spoken is released too
+
+- **WHEN** an agent produces its message and its body then ends, which is reported to nobody
+- **THEN** no container belonging to that agent is running
+
+#### Scenario: A container that could not be ended is surfaced and swept
+
+- **WHEN** a body ends and its container cannot be ended
+- **THEN** the condition is surfaced to the human, the parent is still told the body ended, and the container is ended when the run shuts down
+
 ## MODIFIED Requirements
 
 ### Requirement: An agent that ends without speaking is reported to its parent as a message

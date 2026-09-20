@@ -103,3 +103,63 @@ this is the bound their own reasoning assumed.
 - [ ] 9.2 In that pass, confirm the thing the bug made impossible: a tree that hits a provider error keeps going, or says why it cannot. Record what happened on the task either way — a pass that provoked no provider error has not exercised this and should say so rather than be reported as confirmation.
 - [ ] 9.3 If the pass produces an agent whose body ended, confirm by hand that addressing it continues it. That is the half no live pass has ever reached, because reaching it needs a parent that chooses to retry.
 - [ ] 9.4 And confirm the bound the same way, which is the half that costs real money if it is wrong: a child that cannot be kept alive at all — a model id the provider does not have is the cheapest way to arrange one — is given one body per instruction its parent sends and not a stream of them, and the run says the tree has stopped rather than going quiet. Count containers created for that agent, not reports.
+
+## 10. The container the new exit path orphans, from testing
+
+Group 9.4's live pass found it by counting rather than reading: three instructions to an
+agent whose provider call fails produced three bodies, three ending reports, and three
+containers still `Up` after the operator exited `0` — `docker events` showing three
+`exec_die` and no `die`, `kill` or `destroy`. `#ended` drops the body from `#bodies` and
+never destroys its sandbox; `#shutdown` walks `#bodies`, from which `#ended` has already
+removed it. Structurally it predates this change — `main`'s `#ended` has no destroy either —
+but this change is what makes it reachable and then routine, because a turn that threw used
+to leave the runtime alive-but-idle and the body tracked. One container leaked per provider
+error, and `#revived` does not bound it: that bound is per message, not across a parent that
+keeps answering.
+
+- [x] 10.1 Destroy the sandbox in `#ended`, and put it **above** the early returns rather than
+  beside the report. Three paths out never reach the report — an intended ending, a shutdown,
+  and an agent that had already spoken and so is `waiting` — and each of those is a container.
+  The `#bodies.delete` on the line above is what makes this the last place that can.
+- [x] 10.2 Report that destroy's failure through `#failed`, unlike `#suspend`'s, which is
+  swallowed. A suspension has a caller and an outcome; this has neither, so a failure here is
+  a container held for the rest of the run with nobody in a position to say so — which is this
+  task's own shape. `#failed` never rethrows, so the report to the parent still goes out.
+- [x] 10.3 End `#shutdown` with a `destroyAll()` sweep, before `store.close()`. Walking
+  `#bodies` can only ever find what nothing has already dropped, so the sweep is the backstop
+  for 10.2's failure. Swallowed: a shutdown must not fail through the action a person takes to
+  stop for the day, and what it cleans up was reported when its own destroy failed.
+- [x] 10.4 Confirm the sweep's semantics are the ones wanted — `destroyAll` ends bodies and
+  releases no workspace, which is the distinction `agent/sandbox/index.ts` holds and the one
+  a shutdown would be worst to get wrong.
+- [x] 10.5 `agent/supervisor/failure.test.ts` — three at the double tier: a body that died
+  leaves nothing live and neither does the one revival buys, a body whose agent had already
+  spoken is released on the path that reports nothing, and a destroy that fails reaches
+  `onFailure` and is swept at shutdown. Confirm all three fail against the code without 10.1.
+- [x] 10.6 `agent/supervisor/containers.test.ts` — the assertion only the real tier can make,
+  since the double decides for itself what `docker ps` would have said. Add a `DIE` mode to
+  `harness.ts`'s shell peer that ends the way the runtime now does, and assert from `docker ps`
+  that nothing of the failed agent is left while its parent still holds its own body. Confirm
+  it fails against the code without 10.1.
+- [x] 10.7 Add the requirement to the `agent-supervisor` delta. The code alone is a fix that
+  the next change can undo without noticing, and there is nothing in the main spec that says a
+  body's ending releases its container.
+- [x] 10.8 Record the rule in `agent/supervisor/AGENTS.md`: the two places a body leaves
+  `#bodies` are the two places that destroy its sandbox, why the destroy is above `#ended`'s
+  returns, why this one reports and the other swallows, and that a container whose exec died
+  is still `Up` — which is why this was invisible to a green suite.
+- [x] 10.9 The full-suite run of 10.1–10.8 surfaced its own defect, and it is the same class:
+  `onFailure` reported *"the supervisor could not carry on … destroying the sandbox … failed:
+  removal of container … is already in progress"* over a container that was already going
+  away. `--force` makes destroying idempotent for a sandbox that is **gone** — it exits zero —
+  and the daemon refuses one that is **going**, exit 1. So 10.2's report, which is right, is
+  a false alarm in exactly the window 10.1 made routine. Tolerate it in
+  `agent/sandbox/docker.ts`, where the string belongs, rather than in the supervisor: one
+  `#remove` helper behind both `destroy` and `destroyAll`, tolerating the refusal only where
+  **every** line of the complaint is that one, so a sweep passing several names cannot hide a
+  real failure beside it. Amend the `agent-sandbox` delta's failure-modes requirement, which
+  states the idempotence as gone-only.
+- [x] 10.10 `agent/sandbox/docker.test.ts` — two destroys of a sandbox with a process running
+  in it, concurrently, both resolving. A real race rather than a stubbed reply, so what is
+  tolerated is what the daemon really says; confirmed red three times out of three against the
+  driver without the tolerance.
