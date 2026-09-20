@@ -162,16 +162,20 @@ function aScripted(
 }
 
 /** A supervisor over the real driver, collecting what reaches the person. */
-function aSupervisor(store: Store): { supervisor: Supervisor; heard: string[]; stalls: string[][] } {
+function aSupervisor(store: Store): {
+  supervisor: Supervisor;
+  heard: string[];
+  stalls: { waiting: readonly string[]; stopped: readonly string[] }[];
+} {
   const heard: string[] = [];
-  const stalls: string[][] = [];
+  const stalls: { waiting: readonly string[]; stopped: readonly string[] }[] = [];
   const supervisor = new Supervisor({
     store,
     driver: new DockerSandboxDriver({ run: RUN }),
     // Rendered, because `onMessage` is handed the raw message and is the one delivery path
     // that skips rendering — see `operator.ts`, which is the real consumer.
     onMessage: (message: Message) => heard.push(render(message)),
-    onStalled: (waiting) => stalls.push([...waiting]),
+    onStalled: (stalled) => stalls.push({ waiting: [...stalled.waiting], stopped: [...stalled.stopped] }),
   });
   return { supervisor, heard, stalls };
 }
@@ -563,7 +567,7 @@ describe('a body that dies is something its parent can act on', () => {
 
     await until(async () => heard.length > 0, 'the parent being woken by its child’s death');
     expect(heard[0]).toContain('watcher saw:');
-    expect(heard[0]).toContain(`${child} terminated`);
+    expect(heard[0]).toContain(`${child}'s body ended`);
     // The substrate's mark, carried through the parent's own report of it.
     expect(heard[0]).toContain('[substrate]');
 

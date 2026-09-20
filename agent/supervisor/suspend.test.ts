@@ -514,7 +514,7 @@ describe('a message handed to a body that never recorded it is not lost with the
     peer.die();
     await until(() => run.toHuman.length === 2, 'the death being reported upward');
 
-    expect(run.toHuman.at(-1)?.content).toContain('a terminated');
+    expect(run.toHuman.at(-1)?.content).toContain("a's body ended");
     expect(run.toHuman.at(-1)?.substrate).toBe(true);
     expect(run.store.agent('a').mailbox).toEqual([]);
   });

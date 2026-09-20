@@ -263,7 +263,7 @@ only, and `after` never arrives.
 
 Every stream is therefore read, and `sandbox/index.ts` says so as a requirement on the
 caller rather than leaving it to be rediscovered. What is read from standard error is kept as
-a bounded tail and handed to the parent in the termination report, because a runtime that
+a bounded tail and handed to the parent in the report of its ending, because a runtime that
 could not read its boot frame writes the reason there and nowhere else — and a parent
 choosing between retrying, replacing and escalating was otherwise choosing on `exit 1`.
 
@@ -285,6 +285,28 @@ on the host quietly buffers — and the double in `supervisor/double.ts` cannot 
 because its streams are objects that accept whatever is written. Anything about backpressure
 is `containers.test.ts`'s to hold, and anything about *waiting* can be held in the double by
 making a `send` that never settles, which is what `Peer.deaf` is.
+
+## Report before you destroy standard input, or the reason is replaced by the destroy
+
+`runtime/main.ts` ends the process on a turn it cannot complete, and how it ends is what a
+parent is told: the body's exit becomes a message the supervisor posts, carrying the tail of
+what the body wrote on its standard error. There is exactly one order that works.
+
+**Destroying standard input while the `for await` over it is running makes that loop reject
+with `ERR_STREAM_PREMATURE_CLOSE`.** Verified with a probe rather than reasoned about. That
+rejection lands in the same outer `catch` a boot failure does, so an exit path that destroys
+first and writes the reason afterwards prints *"Premature close"* — handing a parent an
+account of how the process closed its own input in place of why the agent stopped.
+
+So the one exit path writes the reason, sets the exit code, and destroys standard input
+last, and it is idempotent: the second call, arriving from the outer `catch` with the
+destroy's own error, is swallowed rather than allowed to print over the first.
+
+**This is invisible in review and invisible to a test that checks the exit code.** The wrong
+order still exits, still writes exactly one line to standard error, and still reports —
+it reports the wrong thing, which is precisely the diagnosis ENG-216 exists to deliver. The
+test that holds it is `runtime/entry.test.ts`, "reports the failure that stopped the turn
+and not the one raised by stopping", and it asserts on the text rather than on the code.
 
 ## `close` on a child is not the end of its process group
 

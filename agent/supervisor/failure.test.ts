@@ -28,12 +28,19 @@ afterEach(async () => {
 
 const AT = '2026-01-01T00:00:00.000Z';
 
-/** A parent and a child, both booted and both mid-turn. */
-async function aPair(): Promise<Run> {
+/**
+ * A parent and a child, both booted and both mid-turn.
+ *
+ * `await` is what almost every test here needs and all any of them needed until a parent
+ * had something to do about a child that stopped. Naming the grant keeps the default what
+ * it was: a test that has to address a child says so, because the supervisor reads the
+ * caller's record before carrying a request out.
+ */
+async function aPair(tools: string[] = ['await']): Promise<Run> {
   const run = await aRun({ clock: () => Date.parse(AT) });
   runs.push(run);
-  await run.supervisor.add(aRecord({ id: 'a', parent: null, tools: ['await'] }), 'Begin.');
-  await run.supervisor.add(aRecord({ id: 'a-1', parent: 'a', tools: ['await'] }), 'Look at the tree.');
+  await run.supervisor.add(aRecord({ id: 'a', parent: null, tools }), 'Begin.');
+  await run.supervisor.add(aRecord({ id: 'a-1', parent: 'a', tools }), 'Look at the tree.');
   return run;
 }
 
@@ -57,6 +64,19 @@ function reportsTo(run: Run, id: string): Message[] {
 }
 
 describe('an agent that ends without speaking is reported to its parent', () => {
+  /**
+   * What every ending report says after its `<id>'s body ended: <how>` opening.
+   *
+   * Spelled once because three tests assert the whole of it, and because what it says is
+   * the point rather than incidental: a parent reading a death replaces a child whose
+   * transcript and workspace are sitting there intact, and since ENG-216 addressing that
+   * child is what gives it a new body. The sentence is the difference between the parent
+   * continuing the work and throwing it away.
+   */
+  const KEPT =
+    'Its work is kept: send it a message to have it carry on from where it stopped, in a new ' +
+    'body. Replacing it instead discards what it has already done.';
+
   it('wakes a parent suspended on a child that died', async () => {
     const run = await aPair();
     const parent = run.driver.latest('a')!;
@@ -70,7 +90,7 @@ describe('an agent that ends without speaking is reported to its parent', () => 
     await parent.until(() => parent.answers().size === 1, 'the parent being woken');
 
     const answer = parent.answers().get('a:1')!;
-    expect(answer.content).toContain('a-1 terminated');
+    expect(answer.content).toContain("a-1's body ended");
     expect(answer.content).toContain('exit 137');
     // Woken rather than left waiting indefinitely, which is the whole of what this is for.
     expect(run.store.agent('a').state).toEqual({ status: 'working' });
@@ -92,13 +112,13 @@ describe('an agent that ends without speaking is reported to its parent', () => 
 
     expect(run.store.agent('a').mailbox[0]).toEqual({
       from: 'a-1',
-      content: 'a-1 terminated: SIGKILL',
+      content: `a-1's body ended: SIGKILL. ${KEPT}`,
       substrate: true,
     });
 
     parent.answered('Nothing more from me.');
     await parent.until(() => parent.messages().length > 1, 'the report reaching the conversation');
-    expect(parent.messages().at(-1)).toBe(`${SUBSTRATE} a-1 terminated: SIGKILL`);
+    expect(parent.messages().at(-1)).toBe(`${SUBSTRATE} a-1's body ended: SIGKILL. ${KEPT}`);
   });
 
   /**
@@ -121,7 +141,7 @@ describe('an agent that ends without speaking is reported to its parent', () => 
     await until(() => run.store.agent('a').mailbox.length > 0, 'the report being posted');
 
     const report = run.store.agent('a').mailbox[0]!.content;
-    expect(report).toContain('a-1 terminated: exit 1');
+    expect(report).toContain("a-1's body ended: exit 1");
     expect(report).toContain('record.model.credential names "K"');
   });
 
@@ -135,7 +155,7 @@ describe('an agent that ends without speaking is reported to its parent', () => 
     child.die({ code: null, signal: 'SIGKILL' });
     await until(() => run.store.agent('a').mailbox.length > 0, 'the report being posted');
 
-    expect(run.store.agent('a').mailbox[0]!.content).toBe('a-1 terminated: SIGKILL');
+    expect(run.store.agent('a').mailbox[0]!.content).toBe(`a-1's body ended: SIGKILL. ${KEPT}`);
   });
 
   it('reports nothing for an agent that spoke and then exited', async () => {
@@ -515,7 +535,7 @@ describe('an agent whose body cannot be provisioned is reported to its parent', 
     // **Not a death**, which is the one reading that would do harm: a parent that believed
     // it would replace a child that is about to wake up fine.
     expect(report).not.toContain('terminated');
-    expect(report).toContain('has not ended');
+    expect(report).toContain('is not gone');
     expect(report).toContain('still addressable');
     // **And not a loss**, which is the other: a parent that believed its message had gone
     // would send it again, waking the child to two copies of its instruction.
@@ -673,7 +693,9 @@ describe('a stalled tree is surfaced and never resolved', () => {
     child.ask('a-1:1', 'await', {}, 60_000);
 
     await until(() => run.stalls.length > 0, 'the deadlock being surfaced');
-    expect(run.stalls.at(-1)?.sort()).toEqual(['a', 'a-1']);
+    expect(run.stalls.at(-1)?.waiting.toSorted()).toEqual(['a', 'a-1']);
+    // Nothing stopped: this is the ordinary deadlock, two agents each waiting on the other.
+    expect(run.stalls.at(-1)?.stopped).toEqual([]);
     expect(run.supervisor.stalled).toBe(true);
   });
 
@@ -796,5 +818,161 @@ describe('a stalled tree is surfaced even where nobody said where to put it', ()
     } finally {
       process.stderr.write = write;
     }
+  });
+});
+
+/**
+ * A turn that failed, end to end: the report that reaches the parent, and the thing the
+ * parent can do about it.
+ *
+ * **This is the test that would have caught ENG-216.** A turn that threw was recorded in
+ * the runtime and said to nobody, and the runtime then waited on a frame the supervisor
+ * would never send, because it holds a working agent's mail for a turn boundary that turn
+ * would never reach. `runtime/entry.test.ts` holds the runtime's half — that such a turn
+ * ends the process with its reason on standard error. This is the supervisor's: that the
+ * ending becomes a report its parent can act on, and that acting on it works.
+ *
+ * Both halves are needed and neither is sufficient. Exiting without revival tells a parent
+ * its child stopped and leaves it unable to do the first thing the report invites;
+ * revival without exiting leaves the failed turn sitting in a live body saying nothing.
+ */
+describe('a turn that fails reaches the parent, and the parent can continue the child', () => {
+  it('reports the provider failure and revives the child on the parent’s word', async () => {
+    const run = await aPair(['await', 'send']);
+    const parent = run.driver.latest('a')!;
+    const child = run.driver.latest('a-1')!;
+    await parent.until(() => parent.messages().length > 0);
+
+    parent.ask('a:1', 'await', {}, 60_000);
+    await until(() => run.store.agent('a').state.status === 'waiting', 'the parent suspending');
+
+    // What the runtime now does with a turn it cannot complete: the reason on standard
+    // error, and the process ends. A 429 or a 5xx past the SDK's retries is the ordinary
+    // way to arrive here at ten-plus concurrent containers.
+    child.wrote('Connection error.\n');
+    child.die({ code: 1, signal: null });
+
+    await parent.until(() => parent.answers().size === 1, 'the parent being woken');
+    const report = parent.answers().get('a:1')!.content;
+    expect(report).toContain("a-1's body ended");
+    // The account the parent chooses on. Without it the choice is made on `exit 1`.
+    expect(report).toContain('Connection error.');
+    // And the report says the choice exists at all, which is the half that used to be a lie.
+    expect(report).toContain('Its work is kept');
+
+    // It takes the option the report names, and the substrate carries it out.
+    parent.ask('a:2', 'send', { to: 'a-1', content: 'Try that again.' });
+    await until(() => run.driver.all('a-1').length === 2, 'the child being given a new body');
+
+    const revived = run.driver.latest('a-1')!;
+    expect((JSON.parse(revived.boot) as { owed: boolean }).owed).toBe(true);
+    revived.answered('Done, second time around.');
+    await revived.until(() => revived.messages().length > 0, 'the message at the boundary');
+    expect(revived.messages()).toEqual(['[from a] Try that again.']);
+  });
+
+  it('reports a revival that cannot be provisioned and loses nothing', async () => {
+    const run = await aPair(['await', 'send']);
+    const parent = run.driver.latest('a')!;
+    const child = run.driver.latest('a-1')!;
+    await parent.until(() => parent.messages().length > 0);
+
+    child.die({ code: 1, signal: null });
+    await until(() => reportsTo(run, 'a').length === 1, 'the ending reaching the parent');
+    const stored = run.store.agent('a-1');
+
+    withoutBodiesFor(run.driver, 'a-1');
+    parent.ask('a:1', 'send', { to: 'a-1', content: 'Carry on.' });
+    await until(() => reportsTo(run, 'a').length === 2, 'the failed revival being reported');
+
+    expect(reportsTo(run, 'a')[1]?.content).toContain('a-1 could not be given a body');
+    // **The branch writes nothing before it boots**, so a failure leaves the store exactly
+    // as it found it: the message still queued, the agent still owed its step, and a
+    // second attempt possible the moment anything addresses it again.
+    expect(run.store.agent('a-1')).toEqual({ ...stored, mailbox: [{ from: 'a', content: 'Carry on.' }] });
+    expect(run.driver.all('a-1')).toHaveLength(1);
+  });
+});
+
+/**
+ * The stall read, once "cannot move" has to cover an agent with no body.
+ *
+ * One condition — nothing to act on, and not working in a body — covering three shapes:
+ * the agent suspended with an empty mailbox, the agent whose mail cannot be delivered
+ * because nothing can be provisioned for it, and the agent left with no body and nothing
+ * pending to give it one. The last is the backstop, and it holds whatever ended that agent,
+ * including causes nobody has found yet. Before it, one body that died and whose parent did
+ * not happen to `stop` it made `onStalled` unable to fire for the rest of the session,
+ * because every live agent had to be `waiting` — disabling the detector for this entire
+ * class at the moment it was needed. See ENG-216.
+ */
+describe('an agent that cannot be reached at all is counted as stopped', () => {
+  /**
+   * The three pairs the predicate has to tell apart, two of which look alike in the store.
+   *
+   * A second supervisor over the same store is how the middle one is held still: with the
+   * first one running, an agent that has no body and has mail is revived by the settle that
+   * notices, so the state exists for no longer than a delivery. Here nothing has settled
+   * yet, which is the same position the getter is in when it is read from a test.
+   */
+  it('counts a bodiless agent by whether anything is pending for it', async () => {
+    const first = await aPair();
+    const parent = first.driver.latest('a')!;
+    const child = first.driver.latest('a-1')!;
+    await child.until(() => child.messages().length > 0);
+
+    // Each body takes down the message it was given, which is what a real turn's first act
+    // is. Without it a shutdown puts the unacknowledged message back and leaves the agent
+    // `waiting` — a different state from the one under test, and the one `suspend.test.ts`
+    // is about.
+    for (const body of [parent, child]) {
+      body.append({ type: 'message', at: 't', from: 'parent', content: 'Begin.' });
+    }
+    await untilStored(async () => (await first.store.length('a-1')) === 1, 'the message being recorded');
+    await untilStored(async () => (await first.store.length('a')) === 1, 'the message being recorded');
+
+    // **Working in a body**: a turn in flight, which is the one shape of `working` that can
+    // move on its own.
+    expect(first.supervisor.stalled).toBe(false);
+    await first.end();
+
+    const second = await aRun({ directory: first.directory });
+    runs.push(second);
+    expect(second.store.agent('a-1').state).toEqual({ status: 'working' });
+
+    // **No body and nothing pending**: nothing will give this agent one, because revival is
+    // triggered by mail and by nothing else.
+    expect(second.supervisor.stalled).toBe(true);
+
+    // **No body but mail**: delivery will give it one on the next pass, so this is work
+    // about to happen rather than a tree that has stopped.
+    const stored = second.store.agent('a-1');
+    await second.store.save('a-1', { ...stored, mailbox: [{ from: 'a', content: 'Carry on.' }] });
+    expect(second.supervisor.stalled).toBe(false);
+  });
+
+  it('names the agent that stopped, apart from the ones that are waiting', async () => {
+    const run = await aPair();
+    const parent = run.driver.latest('a')!;
+    const child = run.driver.latest('a-1')!;
+    await parent.until(() => parent.messages().length > 0);
+
+    parent.ask('a:1', 'await', {}, 60_000);
+    await until(() => run.store.agent('a').state.status === 'waiting', 'the parent suspending');
+
+    child.die();
+    await parent.until(() => parent.answers().size === 1, 'the ending reaching the parent');
+    // The parent is working again on what it was told, so nothing is stalled yet.
+    expect(run.supervisor.stalled).toBe(false);
+
+    // It does nothing about the child, which is its right, and waits again.
+    parent.ask('a:2', 'await', {}, 60_000);
+    await until(() => run.stalls.length > 0, 'the stopped tree being surfaced');
+
+    expect(run.supervisor.stalled).toBe(true);
+    // **The cause, named apart from the agent that is merely behaving.** A report listing
+    // both as waiting would send a person to look at the parent, which is doing exactly
+    // what it should.
+    expect(run.stalls.at(-1)).toEqual({ waiting: ['a'], stopped: ['a-1'] });
   });
 });

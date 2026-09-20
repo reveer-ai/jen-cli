@@ -28,7 +28,7 @@
  */
 import { DockerSandboxDriver } from './sandbox/docker.ts';
 import { parseRecord } from './record.ts';
-import { render, Store, Supervisor } from './supervisor/index.ts';
+import { describeStall, render, Store, Supervisor } from './supervisor/index.ts';
 
 import { readFile } from 'node:fs/promises';
 import { createInterface } from 'node:readline';
@@ -77,12 +77,12 @@ const supervisor = new Supervisor({
   },
   // Reported, and nothing else: no agent is woken, messaged or ended on account of it.
   // Breaking a deadlock is a judgment about the work, and the person is who the substrate
-  // has for that. The agents that are waiting are named because one shape this takes is a
-  // root that has correctly asked a question, which is resolved by answering it.
-  onStalled: (waiting) => {
-    process.stderr.write(
-      `[substrate] every agent in ${run} is waiting and nothing is pending: ${waiting.join(', ')}\n`,
-    );
+  // has for that. The agents are named because of what the person does next: one shape
+  // this takes is a root that has correctly asked a question, resolved by answering it,
+  // and another is a child whose body ended, resolved by telling it to carry on or by
+  // replacing it. `describeStall` is what keeps those two apart in one line.
+  onStalled: (stalled) => {
+    process.stderr.write(`[substrate] ${describeStall(run, stalled)}\n`);
   },
   // The substrate's own trouble, which no agent can act upon. Said, and the run carries on.
   onFailure: (agent, error) => {
