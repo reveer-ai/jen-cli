@@ -108,11 +108,19 @@ the scripted tier could not have produced.
 **And watch for a tree that has stopped without saying so**, which is not a criterion and is
 the most valuable thing this pass has found. It looks like containers that stay up while
 `docker stats` shows every one of them at 0%, no line added to any
-`events.ndjson` for minutes, and the stored states still reading `working`. The substrate
-reports a stall only when every agent is *waiting*, so a tree stopped in any other state
-says nothing and looks exactly like a tree thinking hard. The cause found in the first pass
-is fixed and tested; if you see the shape again it is something else, and what is worth
-capturing is which agents were in which state, what `docker stats` said, and whether
+`events.ndjson` for minutes, and the stored states still reading `working`. **The substrate
+now says so itself**, which makes the silence the finding rather than the symptom. A stall is
+reported when no live agent can make progress, and an agent whose body ended — or one that
+cannot be given a body at all — counts as stopped rather than as work about to happen:
+`[substrate] nothing in live-1 can make progress. stopped: …` names it on the operator's
+standard error. Until that read existed, a tree stopped in any state but *waiting* said
+nothing at all, and a single dead body kept the report from firing for the rest of the run.
+
+Three causes of this shape have been found by a live pass, each fixed and tested: a body's
+standard error with no reader, a write to a body awaited from inside the serial queue, and a
+turn that failed inside a living body. So if you see the shape again **and the operator said
+nothing**, it is a fourth cause and the most valuable thing this pass can bring back. What is
+worth capturing is which agents were in which state, what `docker stats` said, and whether
 anything was still being written.
 
 ## 2. Resume, and a body that dies
@@ -128,9 +136,19 @@ them happen with a model that is really thinking.
   compare `~/.jen/runs/live-1/agents/<id>/events.ndjson` before and after and the earlier
   lines are unchanged.
 - **A body that dies.** `docker rm --force $(docker ps -q --filter label=jen.agent=<child>)`
-  while its parent is waiting. The parent is woken with a `[substrate] <id> terminated: …`
-  message and decides what to do. **What it decides is the finding** — retry, replace,
-  escalate, give up — and it is the thing no test can assert.
+  while its parent is waiting. The parent is woken with a `[substrate] <id>'s body ended: …`
+  message, which tells it the child's work is kept and that sending the child a message will
+  have it carry on from where it stopped. **What it decides is the finding** — carry on,
+  replace, escalate, give up — and it is the thing no test can assert.
+
+  **Carrying on is the option to watch**, because it is the one that was not available before:
+  an agent whose body ended used to be unreachable, so a parent told its child had stopped
+  could only replace it and throw the work away. Watch for a child that continues from the
+  same transcript and the same workspace rather than starting over — compare
+  `~/.jen/runs/live-1/agents/<child>/events.ndjson` across the death and the earlier lines
+  should still be there. Addressing it buys **one** body: if that one dies too, the parent has
+  to say something again, and until it does the child reads as stopped, which is what puts the
+  line above on standard error instead of leaving the tree quiet.
 
 ## 3. Does the assistant authenticate from the environment alone?
 

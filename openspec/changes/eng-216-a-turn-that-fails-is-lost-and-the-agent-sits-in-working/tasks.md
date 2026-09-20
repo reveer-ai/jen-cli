@@ -85,11 +85,21 @@ this is the bound their own reasoning assumed.
   `agent/supervisor/AGENTS.md`'s claim that mail-triggering prevents the loop, the spec
   delta's SHALL, and the proposal's bullet making the same argument.
 
-## 8. Verification beyond the tier
+## 8. The document the live pass is sent to
+
+**The `terminated` sweep in 6.x missed `agent/LIVE-PASS.md`**, which is the file 9.1 hands test-task. Two paragraphs there describe behaviour this change replaces, and a live pass that checks the guidance on seeing silence is told the silence is expected — recording this change's own failure mode as normal.
+
+- [x] 8.1 `LIVE-PASS.md`'s "watch for a tree that has stopped without saying so": the substrate no longer reports a stall only when every agent is `waiting`, so say what it reports now and name the line it puts on the operator's standard error. The silence becomes the finding rather than the symptom.
+- [x] 8.2 The same paragraph's "the cause found in the first pass is fixed; if you see the shape again it is something else" is stale by two causes. Name all three that a live pass has found, so a fourth reads as a fourth.
+- [x] 8.3 `LIVE-PASS.md`'s "A body that dies": the report is `<id>'s body ended: …`, and the substantive half is that carrying on was not an available option before this change. Say what to watch for and that addressing the agent buys one body — which is 9.3 and 9.4 done by hand.
+- [x] 8.4 Sweep the rest of `agent/` for the same staleness rather than only the two paragraphs named. `suspend.test.ts`'s comment on why a dead body's message is not put back states the parent's options as they were; the reasoning it records is still right and is now load-bearing for the bound.
+- [x] 8.5 The PR description still argues that mail-triggering alone keeps a dying agent out of a loop, which is what the first review returned. It is the host's record of what this change does and what the merge commit carries, so 7.8's correction applies to it.
+
+## 9. Verification beyond the tier
 
 **Left for test-task, not skipped.** A live pass at fan-out is beyond unit scope and is what that stage is for; implement-task ran the scripted tiers instead — the whole substrate suite including both container-backed tiers, and the repository's own build, typecheck and tests. The lesson this task records is that the tier passing is not what confirms this.
 
-- [ ] 8.1 One live pass at the fixed commit, at fan-out wide enough to provoke a provider error. Neither scripted tier caught this across two live passes, so the tier passing is not what confirms it. Follow `agent/LIVE-PASS.md`.
-- [ ] 8.2 In that pass, confirm the thing the bug made impossible: a tree that hits a provider error keeps going, or says why it cannot. Record what happened on the task either way — a pass that provoked no provider error has not exercised this and should say so rather than be reported as confirmation.
-- [ ] 8.3 If the pass produces an agent whose body ended, confirm by hand that addressing it continues it. That is the half no live pass has ever reached, because reaching it needs a parent that chooses to retry.
-- [ ] 8.4 And confirm the bound the same way, which is the half that costs real money if it is wrong: a child that cannot be kept alive at all — a model id the provider does not have is the cheapest way to arrange one — is given one body per instruction its parent sends and not a stream of them, and the run says the tree has stopped rather than going quiet. Count containers created for that agent, not reports.
+- [ ] 9.1 One live pass at the fixed commit, at fan-out wide enough to provoke a provider error. Neither scripted tier caught this across two live passes, so the tier passing is not what confirms it. Follow `agent/LIVE-PASS.md`, which group 8 brought back into agreement with the code.
+- [ ] 9.2 In that pass, confirm the thing the bug made impossible: a tree that hits a provider error keeps going, or says why it cannot. Record what happened on the task either way — a pass that provoked no provider error has not exercised this and should say so rather than be reported as confirmation.
+- [ ] 9.3 If the pass produces an agent whose body ended, confirm by hand that addressing it continues it. That is the half no live pass has ever reached, because reaching it needs a parent that chooses to retry.
+- [ ] 9.4 And confirm the bound the same way, which is the half that costs real money if it is wrong: a child that cannot be kept alive at all — a model id the provider does not have is the cheapest way to arrange one — is given one body per instruction its parent sends and not a stream of them, and the run says the tree has stopped rather than going quiet. Count containers created for that agent, not reports.
