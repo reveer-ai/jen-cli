@@ -233,6 +233,13 @@ The operator has no verb for it either. When you are done with a live run:
 docker volume ls --filter label=jen.run=live-1 --format '{{.Name}}' | xargs -r docker volume rm
 ```
 
+**Check that list before you run it, and remove by name if you have used the same record for
+more than one run.** A workspace's name carries the agent id and not the run, so a later run
+reusing an id reuses the volume, and only the first run to create it is in the label. Filtering
+on `jen.run=live-1` therefore misses volumes `live-1` inherited and catches volumes a later run
+is still using. `docker volume ls --filter label=jen.agent --format '{{.Name}} {{.Labels}}'`
+shows the whole set with who created each.
+
 Read one first if you want to see what an agent actually built:
 
 ```bash

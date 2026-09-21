@@ -391,6 +391,16 @@ and it breaks by deleting data rather than by erroring.
 Concurrent creation for *different* agents is fine: the container name, the workspace name and
 the labels all derive from the agent id, so nothing is shared.
 
+**Two agents in different runs with the same id are not different agents to `workspaceName`,
+though.** It is keyed on the agent id alone and `slug` is a deterministic digest, so a second
+run of the same record hands its `chief-1` the volume the first run's `chief-1` filled — while
+the store, which is `~/.jen/runs/<run>/agents/<id>`, keeps them apart. An agent then starts its
+first turn in a workspace already holding another run's files. The labels do not give this
+away either: creation only labels a volume it *makes*, so a reused volume still carries
+`jen.run` naming whoever created it first, and a label sweep both misses volumes an earlier run
+left and removes volumes a later run is still using. Found by running the same record three
+times under different run names, which is what `LIVE-PASS.md` asks for.
+
 ## What a sandbox image has to provide
 
 `sh` and `sleep`, and nothing else. Creation starts a shell loop as a trivial idle
