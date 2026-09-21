@@ -233,18 +233,18 @@ The operator has no verb for it either. When you are done with a live run:
 docker volume ls --filter label=jen.run=live-1 --format '{{.Name}}' | xargs -r docker volume rm
 ```
 
-**Check that list before you run it, and remove by name if you have used the same record for
-more than one run.** A workspace's name carries the agent id and not the run, so a later run
-reusing an id reuses the volume, and only the first run to create it is in the label. Filtering
-on `jen.run=live-1` therefore misses volumes `live-1` inherited and catches volumes a later run
-is still using. `docker volume ls --filter label=jen.agent --format '{{.Name}} {{.Labels}}'`
-shows the whole set with who created each.
+That selects exactly the workspaces of `live-1` even if you have run the same record several
+times: a workspace's name carries the run as well as the agent, so no two runs ever share one
+and `jen.run` can only name the run that made it.
 
 Read one first if you want to see what an agent actually built:
 
 ```bash
-docker run --rm -v "$(docker volume ls -q --filter label=jen.agent=<id>):/w" busybox:stable ls -la /w
+docker run --rm -v "$(docker volume ls -q --filter label=jen.run=live-1 --filter label=jen.agent=<id>):/w" busybox:stable ls -la /w
 ```
+
+Both filters, because one agent id now names one workspace *per run*: with `jen.agent` alone
+a second run of the same record returns two names and the `-v` argument becomes nonsense.
 
 ## Where the result goes
 

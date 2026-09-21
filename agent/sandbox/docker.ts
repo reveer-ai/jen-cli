@@ -288,7 +288,7 @@ export class DockerSandboxDriver implements SandboxDriver {
    * work. So this tracks what *this call* brought into existence and unwinds only that.
    */
   async create(request: SandboxRequest): Promise<Sandbox> {
-    const workspace = workspaceName(request.id);
+    const workspace = workspaceName(this.#run, request.id);
     const name = `${SANDBOX_PREFIX}-${slug(request.id)}-${randomBytes(4).toString('hex')}`;
     let mine = false;
     let credentials = '';
@@ -381,7 +381,7 @@ export class DockerSandboxDriver implements SandboxDriver {
   /** Ends the agent, not a period of its activity. Succeeds when there is nothing left. */
   async releaseWorkspace(agentId: string): Promise<void> {
     await this.#must(
-      ['volume', 'rm', '--force', workspaceName(agentId)],
+      ['volume', 'rm', '--force', workspaceName(this.#run, agentId)],
       `releasing the workspace for ${agentId}`,
     );
   }
@@ -640,9 +640,27 @@ function containerPath(workspace: string): string {
   return workspace;
 }
 
-/** The agent's workspace. Keyed by the agent, because it outlives any one sandbox. */
-function workspaceName(agentId: string): string {
-  return `${WORKSPACE_PREFIX}-${slug(agentId)}`;
+/**
+ * The workspace of one agent **of one run**.
+ *
+ * Keyed by the agent, because it outlives any one sandbox; keyed by the run as well, because
+ * the store it pairs with is per-run — `~/.jen/runs/<run>/agents/<id>` — and the two must not
+ * disagree about whose work they hold. Named from the agent alone, a second run started from
+ * the same record file would hand its `chief-1` the volume the first run's `chief-1` filled,
+ * and that agent would begin its first turn among another run's files with a transcript that
+ * knows nothing about them. A recovery is unaffected: taking over a run keeps that run's
+ * name, so every volume name is stable across it and a resumed agent finds its files as it
+ * left them.
+ *
+ * The run's own `jen.run` label follows from this rather than being repaired by it.
+ * {@link DockerSandboxDriver.#ensureWorkspace} labels a volume only when it *creates* one, so
+ * while volumes could be reused across runs a reused one still carried the `jen.run` of
+ * whoever made it first — and a sweep by that label both missed volumes an earlier run had
+ * created and removed volumes a later run was still using. Reuse across runs is now
+ * impossible, so the label can only ever name the volume's own run.
+ */
+function workspaceName(run: string, agentId: string): string {
+  return `${WORKSPACE_PREFIX}-${readable(run)}-${readable(agentId)}-${digest(run, agentId)}`;
 }
 
 /**
@@ -650,10 +668,28 @@ function workspaceName(agentId: string): string {
  *
  * The runtime allows only `[a-zA-Z0-9_.-]`, and replacing the rest is lossy — two distinct
  * agents could collapse onto one name, and share a workspace they must never share. The
- * digest of the original is what keeps them apart; the readable part is for whoever is
- * looking at a list of these.
+ * {@link digest} is what keeps them apart; the {@link readable} part is for whoever is
+ * looking at a list of these. One part, so nothing is joined, and the output is byte for byte
+ * what it was when the two halves were written inline here: container names are built from
+ * this and do not move.
  */
 function slug(agentId: string): string {
-  const readable = agentId.replace(/[^a-zA-Z0-9_.-]/g, '-').slice(0, 32);
-  return `${readable}-${createHash('sha256').update(agentId).digest('hex').slice(0, 10)}`;
+  return `${readable(agentId)}-${digest(agentId)}`;
+}
+
+/** As much of a value as the runtime will accept in a name, for a person reading a list. */
+function readable(value: string): string {
+  return value.replace(/[^a-zA-Z0-9_.-]/g, '-').slice(0, 32);
+}
+
+/**
+ * What identifies the parts exactly, where {@link readable} is lossy.
+ *
+ * `\0` joins them, and that is load-bearing wherever there is more than one: a run name is
+ * free text — the store uses one as a directory name — so a digest over the concatenation
+ * would let `("ab", "c")` and `("a", "bc")` name one volume. The separator cannot occur in
+ * either part, so the digest identifies the tuple rather than its letters.
+ */
+function digest(...parts: string[]): string {
+  return createHash('sha256').update(parts.join('\0')).digest('hex').slice(0, 10);
 }
