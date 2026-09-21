@@ -65,6 +65,7 @@ Two things follow, and both are load-bearing:
   | waiting on a request | unanswered call | suspended on purpose | the answer is appended on delivery |
   | working | unanswered call | died mid-call | `answerInterrupted` does its job |
   | working | a complete step | died between steps | resumed, takes the next step |
+  | working, no body | either | its body ended and nobody has addressed it | given a body, `owed`, the moment anything is pending for it |
 
 - **The third row of that table only works because the boot frame carries it.** Rows two and
   three both say `working`, and the body is told so as `owed` on its boot frame — `#boot`'s
@@ -170,14 +171,76 @@ no body" describes every dormant agent settling is about to wake; only "we tried
 failed" picks out a stuck one. So a marked agent's mailbox reads as empty there, and a tree
 stopped by an agent nobody can provision says so instead of looking like a working one.
 
+### `working` with no body, and the one thing that resolves it
+
+The last two rows of that table say `working` and hold no body, and until ENG-216 that was a
+state with no way out. `#deliver` returned early on anything that was not `waiting`, so no
+message could ever be given to such an agent — and `#ended` leaves the stored state alone on
+purpose, so that is exactly where a killed body leaves its agent. Its parent was told and
+could replace it or give up; the obvious answer, telling the child to carry on from a
+transcript and a workspace both sitting there intact, was the one answer unavailable.
+
+**An agent with no body gets one when somebody addresses it.** That is `resume()`'s rule —
+boot every `working` agent with `owed: true` and let it continue — applied at delivery
+instead of at recovery. Nothing in that reasoning was ever peculiar to a supervisor starting
+up: an agent recorded working is owed a step whether its body was lost to a restart, a
+signal, an OOM, a daemon that went away, or a turn that failed inside it. The state stops
+being reachable-only-at-recovery, and it stops being a tombstone for **every** cause rather
+than for whichever one was last found.
+
+What is pending stays pending. An agent continuing an unfinished turn is not at the boundary
+where a message begins one, so the revival takes nothing out of the mailbox and writes
+nothing to the store — which is also why that branch needs no restore where the `waiting`
+path does: a failed provisioning leaves the store exactly as it found it.
+
+**Mail is what triggers it, and nothing else does.** A settle does not walk the run reviving
+what it finds, and this is a judgment rather than an optimisation. Whether to retry a child
+that stopped is the parent's decision — it is why `#ended` reports the ending instead of
+acting on it — and reviving unbidden would move that judgment into this file, where no
+charter can reach it.
+
+**Mail-triggering is not on its own what bounds it, and reading it as though it were is the
+mistake this paragraph used to make.** What it rules out is a settle reviving an agent
+nobody asked about. It does not rule out one instruction being re-read as a new one: the
+revival leaves its message pending, so that message is still at the head of the mailbox when
+the new body dies, and `#ended` → `#settle` → `#deliver` arrives back at the same branch and
+boots again. An agent that dies whenever it is given a body is given one forever — with one
+parent message standing behind all of them rather than nobody, which costs the same. Each
+turn of it is a sandbox created, a boot, a model call, and another substrate report posted
+into a parent that is awake and spending a turn on each one. And the stall read stays silent
+throughout, because the message driving the loop reads as work about to happen. Measured on
+the double before it was bounded: 284 bodies in three seconds from a single `Carry on.`
+
+**A revival answers the message that caused it, so a further revival wants a further
+message.** That is the bound, and it is `#revived` — a set of the agents already given a
+body for the mail they are still holding. An id goes in when a body is actually provisioned
+for a bodiless agent, and comes out when anything is posted to that agent, which is a second
+decision buying a second body, or when the revived body reaches a turn boundary, having got
+somewhere. A revival that could not be provisioned takes no mark: no body was made, and
+`#unprovisioned` has just promised the parent the message will be delivered when the agent
+can be provisioned again. There is no counter in it and no timer, and "what is pending stays
+pending" is untouched — the bound is on how many bodies one message buys, not on the
+message.
+
+**The stall read has to agree, or the bound is the same silent stall in a different coat.**
+An agent that will not be revived again is not made able to move by mail sitting in its box,
+so `#cannotMove` reads a marked agent's mailbox as empty exactly as it does an unreachable
+one's. The two marks stay separate because they mean different things to `#unprovisioned`:
+`#unreachable` is "no body and no way to get one" and is cleared by `#settle` on any
+delivery that does not throw, the refused revival included; `#revived` is "already answered
+with a body", which that clearing is not about and must not clear.
+
 ### The report cannot be `#ended`'s wording, and cannot be `onFailure`
 
 It goes to the agent's parent as a substrate-marked message through `#post`, so a root's
 reaches the human with no special case. Two readings would each do harm and the wording
 rules both out explicitly:
 
-- **Not a death.** The agent never started, has not ended, and is still addressable. A
-  parent that read `terminated` would replace a child that is about to wake up fine.
+- **Not a death.** The agent is still addressable and whatever it has done is kept, and a
+  parent that read it as an ending would replace a child that is about to wake up fine. It
+  says only that much because it has two callers now: an agent being woken for the first
+  time has indeed not started and not ended, and an agent whose *revival* could not be
+  provisioned has done both.
 - **Not a loss.** What was queued is still queued and will be retried. A parent that
   concluded its message had gone would send it again, waking the child to two copies of its
   instruction.
@@ -217,6 +280,33 @@ Nothing in `index.ts` calls `releaseWorkspace`, including dismissal, where keepi
 workspace is the reversible choice and releasing it is not. `policy.test.ts` reads the source
 for that, because a sweep that released workspaces would pass every assertion about ending
 bodies.
+
+### A body leaves `#bodies` in two places, and both destroy its sandbox
+
+`#suspend` and `#ended`. The map is the only handle anything holds on a running container,
+so the `delete` and the `destroy` belong to the same act: whichever of the two takes the body
+out has to be the one that ends it, because after that line nothing else can.
+
+In `#ended` the destroy goes **above** the early returns rather than beside the report it
+sends. Three of its paths never reach that report — an intended ending, a shutdown, and an
+agent that had already spoken and is `waiting` — and each of those is a container.
+
+It is the one destroy that reports its failure, through `onFailure`. `#suspend`'s is
+swallowed because a suspension has a caller and an outcome; this has neither, so a destroy
+that fails here is a container held for the rest of the run with nobody in a position to
+say so.
+
+**A container whose exec died is still up.** PID 1 in a sandbox is the keepalive, so a body
+that ends leaves `docker events` showing an `exec_die` and no `die`, no `kill`, no `destroy`
+— a container idling on `sleep 3600` that reads as healthy. That is why the live pass found
+this and the suite did not: three failed turns, three ending reports, three containers still
+`Up` at the end of a run that exited `0`.
+
+`#shutdown` ends with a `destroyAll()` sweep for the same reason it cannot be the only
+answer: it walks `#bodies`, which can only hold what nothing has already dropped. The sweep
+is the backstop for the destroy that failed, and it is swallowed — a shutdown must not fail
+through the action a person takes to stop for the day, and whatever it is cleaning up was
+already reported when its own destroy failed.
 
 ## No period of the supervisor's own
 
@@ -354,8 +444,8 @@ would otherwise be read by its parent as a death. The substrate's own report is 
 which is why the escape is applied at `render()` rather than wherever a message is posted.
 
 **What makes that safe is the position, not the authorship.** A termination report carries the
-tail of the dead body's standard error, so part of it *is* agent-authored — but always behind
-`<id> terminated: `, and `unmarked` guards position 0 alone. Widening the escape past that
+tail of the ended body's standard error, so part of it *is* agent-authored — but always behind
+`<id>'s body ended: `, and `unmarked` guards position 0 alone. Widening the escape past that
 position would have to revisit the unescaped branch in `render()` rather than keep it.
 
 **A mark-shaped string in the middle of a message is deliberately not escaped.** Escaping every
@@ -452,7 +542,7 @@ above `#post`, not inside it, because `#post`'s other caller is a termination re
 raw `Message`. So at that seam the sender's mark is absent and, more to the point,
 `unmarked()` never runs — the escape that exists so a child opening its report with
 `[substrate] ...` is not read as a death. A human interface that prints `message.content` is
-a person reading a root's quoted `[substrate] a-1 terminated: exit 137` as the substrate
+a person reading a root's quoted `[substrate] a-1's body ended: exit 137` as the substrate
 reporting one, which is the same forgery the escape prevents everywhere else, at the one
 recipient who cannot ask the substrate a follow-up question. `render()` is exported and
 getting it right is one call — so a consumer of `onMessage` renders what it is handed, and
@@ -467,8 +557,25 @@ What a caller should *do* with that report — a log line, an exit, something an
 renders — is genuinely undecided, and the interface that would consume it does not exist yet.
 The callback is the smallest thing that does not pre-judge it.
 
+**The read is one condition and covers three shapes.** An agent cannot move when it has
+nothing to act on — an empty mailbox, or mail that cannot be delivered because nothing can be
+provisioned for it — **and** it is not working in a body. That last clause is what counts an
+agent whose body ended and that nobody has addressed, and it is the backstop for this whole
+class: it holds whatever stopped that agent, including causes nobody has found yet. Before
+it, `stalled` required every live agent to be `waiting`, so one body that died and whose
+parent did not happen to `stop` it made `onStalled` unable to fire for the rest of the
+session — the detector disabled by exactly the event it exists to catch.
+
+**What is reported names the stopped agents apart from the waiting ones**, because the two
+ask different things of the person reading. A tree of nothing but waiting agents is the
+ordinary deadlock, usually a question somebody can answer. An agent whose body ended, or one
+that cannot be provisioned at all, is the cause rather than a participant — and a report
+that listed it among the waiting would name everything except the thing to look at.
+`describeStall` is exported so the operator and the supervisor's own default say it the same
+way.
+
 **A root waiting on a person it has actually messaged reads as stalled, and that is new.**
-`stalled` asks whether every live agent is `waiting` with an empty mailbox; a root that calls
+`stalled` counts such a root as unable to move; a root that calls
 `send(HUMAN, …)` and then `await()` is exactly that, because the message left the tree and the
 reply — if one is coming — is a human's to send with `tell`. Before upward `send` existed no
 agent could put a question where only a person could answer it mid-turn, so every stall was a

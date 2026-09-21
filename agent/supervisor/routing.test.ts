@@ -8,7 +8,7 @@
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { aRecord } from '../fixture.ts';
-import { aRun, until, type Run } from './double.ts';
+import { aRun, until, untilStored, type Run } from './double.ts';
 
 const runs: Run[] = [];
 
@@ -425,5 +425,98 @@ describe('a dismissed agent ends, and its work does not', () => {
     await one.until(() => one.answers().size === 1);
     expect(one.answers().get('a-1:1')?.ok).toBe(false);
     expect(run.store.agent('a-2').state.status).not.toBe('dismissed');
+  });
+});
+
+/**
+ * An agent with no body gets one when somebody addresses it.
+ *
+ * **The rule `resume()` already applies at recovery, applied at delivery.** Taking over a
+ * store boots every agent recorded `working` with `owed: true` and lets each continue from
+ * where it stopped; nothing about that reasoning is peculiar to a supervisor starting up.
+ * An agent recorded working is owed a step whether its body was lost to a restart or to a
+ * signal, an OOM, a daemon that went away, or a turn that failed inside it.
+ *
+ * Without it that state is a tombstone. `#ended` reports the ending and leaves the stored
+ * state alone so the parent owns the decision — and the decision the parent owns was one it
+ * could not carry out, because `#deliver` returned early on anything that was not `waiting`.
+ * Its child's transcript and workspace were sitting there intact and the only responses
+ * available were to replace it or to give up. See ENG-216.
+ */
+describe('an agent whose body ended is given a new one when it is addressed', () => {
+  it('boots it owing a step, on its own transcript, and delivers at the boundary it reaches', async () => {
+    const run = await aTree(1);
+    const parent = run.driver.latest('a')!;
+    const child = run.driver.latest('a-1')!;
+    await child.until(() => child.messages().length > 0);
+
+    // A turn's worth of work, stored, so what the new body boots on can be told from an
+    // empty log — this is the work a replacement would have thrown away.
+    child.append({ type: 'charter', at: 't', content: 'Look at the tree.' });
+    child.append({ type: 'message', at: 't', from: 'parent', content: 'Begin.' });
+    await untilStored(async () => (await run.store.length('a-1')) === 2, "the child's work being stored");
+
+    child.die();
+    await until(() => run.store.agent('a').mailbox.length > 0, 'the ending reaching the parent');
+    expect(run.store.agent('a-1').state).toEqual({ status: 'working' });
+    expect(run.driver.all('a-1')).toHaveLength(1);
+
+    // The parent does the thing the report invites: it tells the child to carry on.
+    parent.ask('a:1', 'send', { to: 'a-1', content: 'Carry on.' });
+    await until(() => run.driver.all('a-1').length === 2, 'the child being given a new body');
+
+    const revived = run.driver.latest('a-1')!;
+    const boot = JSON.parse(revived.boot) as { events: unknown[]; owed: boolean };
+    // Owed, because it is continuing an unfinished turn rather than starting one — the same
+    // frame `resume()` boots a recovered agent with.
+    expect(boot.owed).toBe(true);
+    expect(boot.events).toHaveLength(2);
+
+    // **And what was pending is still pending.** An agent mid-turn is not at the boundary
+    // where a message begins one, so the revival consumed nothing: the message is delivered
+    // by the ordinary path when this body reaches a boundary of its own.
+    expect(run.store.agent('a-1').mailbox).toMatchObject([{ from: 'a', content: 'Carry on.' }]);
+    expect(revived.messages()).toEqual([]);
+
+    revived.answered('Picked up where I left off.');
+    await revived.until(() => revived.messages().length > 0, 'the held message at the boundary');
+    expect(revived.messages()).toEqual(['[from a] Carry on.']);
+  });
+
+  it('does not revive an agent nobody has addressed', async () => {
+    const run = await aTree(1);
+    const parent = run.driver.latest('a')!;
+    const child = run.driver.latest('a-1')!;
+    await child.until(() => child.messages().length > 0);
+
+    child.die();
+    await until(() => run.store.agent('a').mailbox.length > 0, 'the ending reaching the parent');
+
+    // Settles, one after another, each of which walks every agent in the run. Whether to
+    // retry is the parent's judgment and this is the substrate declining to make it —
+    // reviving on its own would also loop on an agent that dies whenever it is given a body.
+    parent.answered('Noted.');
+    await parent.until(() => parent.messages().length > 1, 'the ending reaching the conversation');
+    parent.ask('a:1', 'await', {}, 60_000);
+    await until(() => run.store.agent('a').state.status === 'waiting', 'the parent suspending');
+
+    expect(run.driver.all('a-1')).toHaveLength(1);
+    expect(run.store.agent('a-1').state).toEqual({ status: 'working' });
+  });
+
+  it('gives a second body to nobody that already has one', async () => {
+    const run = await aTree(1);
+    const parent = run.driver.latest('a')!;
+    const child = run.driver.latest('a-1')!;
+    await child.until(() => child.messages().length > 0);
+
+    // Working *in a body* is an in-flight turn, which a message's arrival does not
+    // interrupt — the case the old `status !== 'waiting'` guard was always really about.
+    parent.ask('a:1', 'send', { to: 'a-1', content: 'One more thing.' });
+    await parent.until(() => parent.answers().size === 1, 'the message being stored');
+
+    expect(run.driver.all('a-1')).toHaveLength(1);
+    expect(run.store.agent('a-1').mailbox).toMatchObject([{ from: 'a', content: 'One more thing.' }]);
+    expect(child.messages()).toEqual(['[from a] Begin.']);
   });
 });

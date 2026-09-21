@@ -240,7 +240,11 @@ describe('an agent’s own words cannot be read as another sender’s', () => {
     child.die({ code: null, signal: 'SIGKILL' });
     await parent.until(() => parent.answers().size === 1, 'the termination report');
 
-    expect(parent.answers().get('a:1')!.content).toBe(`${SUBSTRATE} a-1 terminated: SIGKILL`);
+    // Its wording is `failure.test.ts`'s; what this holds is that the mark reached the
+    // parent as the substrate's own, with nothing escaped in front of it.
+    const read = parent.answers().get('a:1')!.content;
+    expect(read.startsWith(`${SUBSTRATE} a-1's body ended: SIGKILL`)).toBe(true);
+    expect(read).not.toContain('\\[');
   });
 });
 

@@ -312,8 +312,8 @@ export interface Run {
   directory: string;
   /** Messages the root addressed to its parent, who is the human. */
   toHuman: Message[];
-  /** Every time the tree was reported stalled, and who was waiting. */
-  stalls: string[][];
+  /** Every time the tree was reported stalled, and who was waiting and who had stopped. */
+  stalls: { waiting: readonly string[]; stopped: readonly string[] }[];
   /** The supervisor's own trouble: what it could not do, and which agent it was doing it for. */
   failures: { agent: string; error: unknown }[];
   end(): Promise<void>;
@@ -336,7 +336,7 @@ export async function aRun(
   const driver = options.driver ?? new TestDriver();
   const store = await Store.open(join(directory, '.jen'), options.run ?? 'r1');
   const toHuman: Message[] = [];
-  const stalls: string[][] = [];
+  const stalls: { waiting: readonly string[]; stopped: readonly string[] }[] = [];
   const failures: { agent: string; error: unknown }[] = [];
 
   const supervisor = new Supervisor({
@@ -344,7 +344,12 @@ export async function aRun(
     driver,
     command: ['jen-agent'],
     ...(options.onMessage === null ? {} : { onMessage: (message: Message) => toHuman.push(message) }),
-    ...(options.onStalled === null ? {} : { onStalled: (waiting: readonly string[]) => stalls.push([...waiting]) }),
+    ...(options.onStalled === null
+      ? {}
+      : {
+          onStalled: (stalled: { waiting: readonly string[]; stopped: readonly string[] }) =>
+            stalls.push({ waiting: [...stalled.waiting], stopped: [...stalled.stopped] }),
+        }),
     ...(options.onFailure === null ? {} : { onFailure: (agent: string, error: unknown) => failures.push({ agent, error }) }),
     ...(options.clock === undefined ? {} : { clock: options.clock }),
   });

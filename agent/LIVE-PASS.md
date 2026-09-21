@@ -13,13 +13,44 @@ structural criterion is unaffected.
 ## What you need
 
 - A container runtime, and the image: `docker build --tag jen/agent:latest agent`.
-- A model credential. The records below reach OpenRouter, so `OPENROUTER_API_KEY` in the
+- A model credential. The records below reach OpenRouter, so `OPENROUTER_API_TOKEN` in the
   environment you start the operator from. Any OpenAI-compatible endpoint works — the
   provider is a value on the record and not a commitment in code.
-- For §3 only: `CLAUDE_CODE_OAUTH_TOKEN` in that same environment, which `claude
-  setup-token` mints from a Claude subscription. **It must be a value an environment
-  variable can carry.** `agent-sandbox` forbids a secret reaching a file, inside the sandbox
-  or outside it, so there is no login-file fallback and this is the whole question §3 asks.
+
+  **A key that authenticates is not a key that can pay, and the two fail differently.**
+  `/api/v1/key` reports the key's own limit and says nothing about the account's balance;
+  `/api/v1/credits` is what holds that. The runtime sets no `max_tokens`, so every request
+  asks for the model's whole output window and OpenRouter refuses it up front when *that
+  window* costs more than the balance left — `402 … you requested up to 65536 tokens, but
+  can only afford 36320` — before a token is generated and before any agent reasons. The
+  refusal is per-model, so a balance that cannot afford `claude-opus-5`'s window still runs
+  `claude-haiku-4.5`'s, and a pass that switches models to get moving is watching a
+  different model than the one it set out to. Check `/credits` before starting, and read a
+  mid-run `402` the same way: *exceed your available credits given your current in-flight
+  requests* is the concurrency form and settles on its own, *requires more credits, or fewer
+  max_tokens* does not.
+
+  **At fan-out it is concurrency and not usage that empties the account**, which is the
+  form that surprises. Every in-flight request reserves its whole output window, so eleven
+  `claude-opus-5` bodies at once reserve about $18 against whatever the balance actually is,
+  and each one dies with the concurrency `402` while the spend to that point is a fraction
+  of it. Budget a wide pass as *peak containers × the model's output window × its completion
+  price*, not as what you expect it to cost. The tree does not spin when this happens — the
+  revival bound holds each bodiless agent at one body per message — so what you see is a
+  tree of agents recorded `working` with mail queued and almost no containers up, and the
+  stall line naming them the moment the last body goes.
+- For §3 only: `CLAUDE_OAUTH_TOKEN` in that same environment, which `claude setup-token`
+  mints from a Claude subscription. **It must be a value an environment variable can
+  carry.** `agent-sandbox` forbids a secret reaching a file, inside the sandbox or outside
+  it, so there is no login-file fallback and this is the whole question §3 asks.
+
+  **The two names each appear twice here and mean different things both times, so check
+  which one you are reading.** The records' `ref` is the variable on *your* machine —
+  `OPENROUTER_API_TOKEN`, `CLAUDE_OAUTH_TOKEN` — and their `name` is the variable inside
+  the sandbox, where `claude` requires `CLAUDE_CODE_OAUTH_TOKEN` exactly. Getting the `ref`
+  wrong fails at creation, in the credential prologue, before any agent runs: an unresolvable
+  reference is refused rather than substituted, so the pass stops at the first record instead
+  of part way through a tree.
 
 Credentials reach an agent by *reference*: the record names a variable, the operator's own
 environment holds the value, and the sandbox writes it onto each process's standard input as
@@ -44,7 +75,7 @@ Write `chief.json`, adjusting the model identifiers to what your provider spells
   "workspace": "/workspace",
   "environment": "jen/agent:latest",
   "tools": ["spawn", "await", "send", "stop", "read", "fs", "exec"],
-  "credentials": [{ "name": "MODEL_API_KEY", "ref": "env:OPENROUTER_API_KEY" }],
+  "credentials": [{ "name": "MODEL_API_KEY", "ref": "env:OPENROUTER_API_TOKEN" }],
   "parent": null
 }
 ```
@@ -108,11 +139,19 @@ the scripted tier could not have produced.
 **And watch for a tree that has stopped without saying so**, which is not a criterion and is
 the most valuable thing this pass has found. It looks like containers that stay up while
 `docker stats` shows every one of them at 0%, no line added to any
-`events.ndjson` for minutes, and the stored states still reading `working`. The substrate
-reports a stall only when every agent is *waiting*, so a tree stopped in any other state
-says nothing and looks exactly like a tree thinking hard. The cause found in the first pass
-is fixed and tested; if you see the shape again it is something else, and what is worth
-capturing is which agents were in which state, what `docker stats` said, and whether
+`events.ndjson` for minutes, and the stored states still reading `working`. **The substrate
+now says so itself**, which makes the silence the finding rather than the symptom. A stall is
+reported when no live agent can make progress, and an agent whose body ended — or one that
+cannot be given a body at all — counts as stopped rather than as work about to happen:
+`[substrate] nothing in live-1 can make progress. stopped: …` names it on the operator's
+standard error. Until that read existed, a tree stopped in any state but *waiting* said
+nothing at all, and a single dead body kept the report from firing for the rest of the run.
+
+Three causes of this shape have been found by a live pass, each fixed and tested: a body's
+standard error with no reader, a write to a body awaited from inside the serial queue, and a
+turn that failed inside a living body. So if you see the shape again **and the operator said
+nothing**, it is a fourth cause and the most valuable thing this pass can bring back. What is
+worth capturing is which agents were in which state, what `docker stats` said, and whether
 anything was still being written.
 
 ## 2. Resume, and a body that dies
@@ -128,9 +167,19 @@ them happen with a model that is really thinking.
   compare `~/.jen/runs/live-1/agents/<id>/events.ndjson` before and after and the earlier
   lines are unchanged.
 - **A body that dies.** `docker rm --force $(docker ps -q --filter label=jen.agent=<child>)`
-  while its parent is waiting. The parent is woken with a `[substrate] <id> terminated: …`
-  message and decides what to do. **What it decides is the finding** — retry, replace,
-  escalate, give up — and it is the thing no test can assert.
+  while its parent is waiting. The parent is woken with a `[substrate] <id>'s body ended: …`
+  message, which tells it the child's work is kept and that sending the child a message will
+  have it carry on from where it stopped. **What it decides is the finding** — carry on,
+  replace, escalate, give up — and it is the thing no test can assert.
+
+  **Carrying on is the option to watch**, because it is the one that was not available before:
+  an agent whose body ended used to be unreachable, so a parent told its child had stopped
+  could only replace it and throw the work away. Watch for a child that continues from the
+  same transcript and the same workspace rather than starting over — compare
+  `~/.jen/runs/live-1/agents/<child>/events.ndjson` across the death and the earlier lines
+  should still be there. Addressing it buys **one** body: if that one dies too, the parent has
+  to say something again, and until it does the child reads as stopped, which is what puts the
+  line above on standard error instead of leaving the tree quiet.
 
 ## 3. Does the assistant authenticate from the environment alone?
 
@@ -149,8 +198,8 @@ its image has:
 ```json
   "charter": "…\n\nYour image provides the `claude` command, run headlessly as `claude -p '<prompt>'`. Its credentials are already in your environment — you never supply one. Check it is there before you rely on it.",
   "credentials": [
-    { "name": "MODEL_API_KEY", "ref": "env:OPENROUTER_API_KEY" },
-    { "name": "CLAUDE_CODE_OAUTH_TOKEN", "ref": "env:CLAUDE_CODE_OAUTH_TOKEN" }
+    { "name": "MODEL_API_KEY", "ref": "env:OPENROUTER_API_TOKEN" },
+    { "name": "CLAUDE_CODE_OAUTH_TOKEN", "ref": "env:CLAUDE_OAUTH_TOKEN" }
   ]
 ```
 
@@ -183,6 +232,13 @@ The operator has no verb for it either. When you are done with a live run:
 ```bash
 docker volume ls --filter label=jen.run=live-1 --format '{{.Name}}' | xargs -r docker volume rm
 ```
+
+**Check that list before you run it, and remove by name if you have used the same record for
+more than one run.** A workspace's name carries the agent id and not the run, so a later run
+reusing an id reuses the volume, and only the first run to create it is in the label. Filtering
+on `jen.run=live-1` therefore misses volumes `live-1` inherited and catches volumes a later run
+is still using. `docker volume ls --filter label=jen.agent --format '{{.Name}} {{.Labels}}'`
+shows the whole set with who created each.
 
 Read one first if you want to see what an agent actually built:
 

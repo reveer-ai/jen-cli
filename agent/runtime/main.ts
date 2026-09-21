@@ -266,6 +266,43 @@ function say(frame: FromAgent): void {
   process.stdout.write(encode(frame));
 }
 
+/**
+ * The one way this process ends badly, and the only place a reason is written.
+ *
+ * Two callers, and they are the same event: an agent that cannot carry on. One is the boot
+ * failure the outer `catch` has always handled. The other is a turn that threw part-way
+ * through, which used to be recorded in a variable and said to nobody — and had nowhere
+ * else to say it, because the supervisor holds a working agent's messages for a turn
+ * boundary, so a runtime that kept reading after a failed turn was waiting for a frame that
+ * only its own turn report could have caused. Ending is what reaches the parent: the body's
+ * exit becomes a message the supervisor posts, and this line on standard error is the
+ * account that message carries.
+ *
+ * **The order inside here is load-bearing, and the idempotence is what protects it.**
+ * Destroying standard input while the `for await` over it is running makes that loop reject
+ * with `ERR_STREAM_PREMATURE_CLOSE`, and that rejection reaches the outer `catch` — so a
+ * path that destroyed first and reported afterwards would print *"Premature close"* where
+ * the provider's reason belonged, handing a parent an account of how the process closed its
+ * own input instead of why the agent stopped. The reason goes out before the destroy, and
+ * the second call swallows what the destroy raises.
+ */
+let stopping = false;
+function stop(reason: unknown): void {
+  if (stopping) return;
+  stopping = true;
+  // The message, not the stack. Every failure that can reach here already names what it
+  // could not read or could not resolve, and a stack trace above it buries that under
+  // frames from inside this file. What reads these is a supervisor collecting stderr from a
+  // process it started.
+  process.stderr.write(`${reason instanceof Error ? reason.message : String(reason)}\n`);
+  process.exitCode = 1;
+  // **And the process has to actually end.** The channel is a pipe the supervisor is
+  // holding open, and a read from it keeps this process alive on its own — so an agent that
+  // failed would sit there having said what was wrong and never exit, which the supervisor
+  // reads as an agent still working. Setting an exit code is not exiting.
+  process.stdin.destroy();
+}
+
 try {
   const frame = await readBootFrame(process.stdin);
 
@@ -312,17 +349,26 @@ try {
    * relaxed.
    */
   let turns = Promise.resolve();
-  let failure: unknown;
 
   const take = (work: () => Promise<string>): void => {
     turns = turns.then(async () => {
-      if (failure !== undefined) return;
+      // **Not the failure guard this replaced.** That one held a diagnosis for a reader it
+      // could not reach; this one declines to start work after the process has already
+      // said why it is ending. A turn taken after `stop` would report a turn boundary on a
+      // channel whose reader is about to be told the body ended — and a supervisor that
+      // took that report would move the agent to `waiting` and read the exit as an agent
+      // that had said its piece, which is the silence this whole change is about.
+      if (stopping) return;
       try {
         // Zero, always. An agent at a turn boundary has asked for nothing about its body,
         // and saying so here is what keeps the supervisor from having a default to supply.
         say({ t: 'turn', message: await work(), residency: 0 });
       } catch (error) {
-        failure = error;
+        // **What reaches here is the model client, and little else.** `dispatch` turns
+        // every capability failure into an `ok: false` result the loop feeds back to the
+        // model rather than throwing, so what escapes `run()` is a provider call that
+        // failed past the SDK's retries — the 429 or 5xx this change is about.
+        stop(error);
       }
     });
   };
@@ -355,8 +401,6 @@ try {
   if (frame.owed) take(() => runtime.run());
 
   for await (const line of lines(process.stdin)) {
-    if (failure !== undefined) break;
-
     let received;
     try {
       received = parseToAgent(line);
@@ -387,17 +431,9 @@ try {
   }
 
   await turns;
-  if (failure !== undefined) throw failure;
 } catch (error) {
-  // The message, not the stack. Every failure that can reach here already names what it
-  // could not read or could not resolve, and a stack trace above it buries that under
-  // frames from inside this file. What reads these is a supervisor collecting stderr from a
-  // process it started.
-  process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
-  process.exitCode = 1;
-  // **And the process has to actually end.** The channel is a pipe the supervisor is
-  // holding open, and a read from it keeps this process alive on its own — so an agent that
-  // failed to boot would sit there having said what was wrong and never exit, which the
-  // supervisor reads as an agent still working. Setting an exit code is not exiting.
-  process.stdin.destroy();
+  // Including the `ERR_STREAM_PREMATURE_CLOSE` a failed turn's own destroy raises out of
+  // the loop above, which arrives here after the reason has already been written and is
+  // swallowed by the flag rather than printed over it.
+  stop(error);
 }

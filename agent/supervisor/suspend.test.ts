@@ -404,10 +404,13 @@ describe('a message handed to a body that never recorded it is not lost with the
   /**
    * A body that *died* is deliberately left alone, and the line is worth stating.
    *
-   * Its parent is told the child terminated, and the parent's weights choose between
-   * retrying, replacing, escalating and giving up. Putting the message back would wake the
-   * child again on the supervisor's own initiative — retrying a body that just failed, which
-   * is the judgment `#ended` already declines to make.
+   * Its parent is told the child's body ended, and the parent's weights choose between
+   * carrying it on, replacing it, escalating and giving up. Putting the message back would
+   * wake the child again on the supervisor's own initiative — retrying a body that just
+   * failed, which is the judgment `#ended` already declines to make. Carrying on is now a
+   * real option rather than a nominal one, since addressing a bodiless agent gives it a body,
+   * and that is exactly why the initiative has to stay the parent's: the supervisor doing it
+   * unbidden is the loop `#revived` bounds.
    */
   /**
    * The restore's third caller, which is the ordinary one.
@@ -514,7 +517,7 @@ describe('a message handed to a body that never recorded it is not lost with the
     peer.die();
     await until(() => run.toHuman.length === 2, 'the death being reported upward');
 
-    expect(run.toHuman.at(-1)?.content).toContain('a terminated');
+    expect(run.toHuman.at(-1)?.content).toContain("a's body ended");
     expect(run.toHuman.at(-1)?.substrate).toBe(true);
     expect(run.store.agent('a').mailbox).toEqual([]);
   });

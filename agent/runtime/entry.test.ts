@@ -1244,3 +1244,52 @@ describe('a capability that raises and then works where it stands', () => {
     await peer.stop();
   });
 });
+
+/**
+ * A turn that cannot be completed, and the one thing the entry point says by ending.
+ *
+ * This is ENG-216's regression, and what it holds is a deadlock rather than a message. A
+ * turn that threw used to be recorded in a variable read in two places, both of them
+ * reached only by another inbound frame — and the supervisor sends a working agent none,
+ * because it holds its mail for a turn boundary the failed turn never reaches. The process
+ * stayed up on an open pipe with the diagnosis written, correct, and unsendable.
+ *
+ * **So the whole test is what it does not do: it sends nothing.** A test that writes one
+ * more frame passes against the broken code, because that frame is exactly what released
+ * the diagnosis.
+ */
+describe('a turn that cannot be completed ends the process', () => {
+  /** A boot frame owing a step, against an endpoint nothing is listening on. */
+  function unreachable(): string {
+    const record = aRecord({ model: { ...aRecord().model, baseURL: 'http://127.0.0.1:1/v1', model: 'stub-model' } });
+    return `${JSON.stringify({ record, events: [], owed: true })}\n`;
+  }
+
+  it('exits, and says why, without anything further being sent to it', async () => {
+    const peer = new Peer(unreachable(), { MODEL_API_KEY: 'sk-stub' });
+
+    expect(await peer.exit).toBe(1);
+    expect(peer.stderr).toMatch(/Connection error/);
+    // Nothing on the channel but the charter the runtime emits as it starts: no turn was
+    // reported, because no turn ended.
+    expect(peer.turns).toEqual([]);
+  }, 30_000);
+
+  /**
+   * The 1.2 landmine, and it is invisible to a test that only checks the exit code.
+   *
+   * Destroying standard input while the `for await` over it is running makes that loop
+   * reject with `ERR_STREAM_PREMATURE_CLOSE`, which arrives at the outer `catch`. An
+   * implementation that destroys before it reports still exits and still writes a line —
+   * it writes *"Premature close"*, handing a parent an account of how the process closed
+   * its own input in place of the reason the agent stopped. Which is the diagnosis this
+   * entire change exists to deliver.
+   */
+  it('reports the failure that stopped the turn and not the one raised by stopping', async () => {
+    const peer = new Peer(unreachable(), { MODEL_API_KEY: 'sk-stub' });
+
+    expect(await peer.exit).toBe(1);
+    expect(peer.stderr).not.toMatch(/Premature close|ERR_STREAM_PREMATURE_CLOSE/);
+    expect(peer.stderr.trim().split('\n')).toHaveLength(1);
+  }, 30_000);
+});

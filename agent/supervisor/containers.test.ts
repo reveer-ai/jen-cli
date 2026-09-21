@@ -426,3 +426,50 @@ done
     await supervisor.shutdown();
   }, 300_000);
 });
+
+/**
+ * What is left running after a body ends on its own, which is the assertion a double cannot
+ * make.
+ *
+ * `failure.test.ts` holds the mechanism — that `#ended` destroys the sandbox it has just
+ * dropped from `#bodies` — but the double decides for itself what a container is, so it
+ * cannot say whether one is still up. The leak was found by counting `docker ps` after a
+ * live pass, and this is the tier that can count it: three failed turns left three
+ * containers `Up`, each idling on the sandbox keepalive, with nothing in `docker events`
+ * but the `exec_die`. The exec had died; the container had not. See ENG-216.
+ */
+describe('a body that fails its turn takes its container with it', () => {
+  it('leaves nothing running but the agent still working in a body', async () => {
+    const { store } = await aStore();
+    const supervisor = aSupervisor(store);
+    const chief = `${RUN}-watcher`;
+    const doomed = `${RUN}-doomed`;
+
+    // `HOLD` never answers, so the parent keeps its body for the whole test — a control
+    // that fails this if the sweep here were indiscriminate, and the agent the report is
+    // delivered to.
+    await supervisor.add(aPeerRecord(chief, 'HOLD: stay mid-turn and keep the container.'), 'Begin.');
+    await supervisor.add(aPeerRecord(doomed, 'DIE: fail the turn the way a provider error does.', chief), 'Begin.');
+
+    // Waited on through the report rather than by polling for a container, because the
+    // window this is about is the one between the exec dying and the destroy — the very
+    // thing that must be too short to catch. The report is proof the body ran and ended.
+    await until(
+      async () => store.agent(chief).mailbox.some((message) => message.from === doomed),
+      'the ending reaching the parent',
+    );
+    expect(store.agent(chief).mailbox.at(-1)?.content).toContain('Connection error.');
+
+    // Gone entirely rather than merely stopped: `destroy` is `rm --force`, so a container
+    // still listed here at all is one nothing released.
+    await until(async () => !(await all()).includes(doomed), 'the failed body’s container being removed');
+    expect(await running()).toEqual([chief]);
+
+    // And its workspace is untouched, which is what the report promises the parent: a
+    // destroyed body is not a discarded agent.
+    expect(await lines('volume', 'ls', '--filter', `label=jen.agent=${doomed}`, '--format', '{{.Name}}')).toHaveLength(1);
+
+    await supervisor.shutdown();
+    expect(await running()).toEqual([]);
+  }, 300_000);
+});

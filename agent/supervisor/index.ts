@@ -154,7 +154,7 @@ function unmarked(content: string): string {
 export function render(message: Message): string {
   // The substrate's own report is not escaped, and what makes that safe is *position* rather
   // than authorship. The report may carry an agent's own bytes — {@link Supervisor.#ended}
-  // appends a dead body's last words to it — but always behind `<id> terminated: `, so
+  // appends an ended body's last words to it — but always behind `<id>'s body ended: `, so
   // position 0 is the substrate's throughout and there is nothing there to escape. Escaping
   // anyway would put a backslash in front of every death report the mark starts.
   //
@@ -162,6 +162,30 @@ export function render(message: Message): string {
   // it to every occurrence would have to revisit this branch rather than keep it, because
   // what is downstream of the mark here is no longer only the substrate's own words.
   return `${mark(message)} ${message.substrate === true ? message.content : unmarked(message.content)}`;
+}
+
+/**
+ * A stall, as a line for a person.
+ *
+ * Exported for the same reason {@link render} is: the operator is the real consumer, and a
+ * sentence each caller writes for itself is one each caller gets subtly wrong. What it has
+ * to carry is which agents are the cause — a run halted by a body that ended names that
+ * agent, and a report that listed it among the waiting would name everything except the
+ * thing to look at.
+ *
+ * **The ordinary deadlock keeps the sentence it had.** Nothing stopped means every agent is
+ * waiting on something that is not coming, which is usually a question the person can
+ * answer, and that case should not be made to read like a failure.
+ */
+export function describeStall(
+  run: string,
+  stalled: { waiting: readonly string[]; stopped: readonly string[] },
+): string {
+  if (stalled.stopped.length === 0) {
+    return `every agent in ${run} is waiting and nothing is pending: ${stalled.waiting.join(', ')}`;
+  }
+  const waiting = stalled.waiting.length === 0 ? '' : `, and waiting: ${stalled.waiting.join(', ')}`;
+  return `nothing in ${run} can make progress. stopped: ${stalled.stopped.join(', ')}${waiting}`;
 }
 
 /** What a body is, for as long as there is one. */
@@ -291,8 +315,15 @@ export interface SupervisorOptions {
    * default of nothing would make a stalled tree indistinguishable from a working one for
    * every caller that has not thought about it, which is the one outcome the requirement
    * exists to prevent.
+   *
+   * **It names what stopped as well as what is waiting**, because those want different
+   * things from the person reading them. An agent that is merely waiting is behaving, and
+   * a stall of nothing but those is the ordinary deadlock — a question nobody answered.
+   * An agent whose body ended, or one that could not be given a body at all, is the cause
+   * rather than a participant, and a report that listed it among the waiting would name
+   * everything except the thing to look at.
    */
-  onStalled?: (waiting: readonly string[]) => void;
+  onStalled?: (stalled: { waiting: readonly string[]; stopped: readonly string[] }) => void;
   /**
    * Where the supervisor's own trouble goes.
    *
@@ -315,7 +346,7 @@ export class Supervisor {
   readonly #driver: SandboxDriver;
   readonly #command: string[];
   readonly #onMessage: (message: Message) => void;
-  readonly #onStalled: (waiting: readonly string[]) => void;
+  readonly #onStalled: (stalled: { waiting: readonly string[]; stopped: readonly string[] }) => void;
   readonly #onFailure: (agent: string, error: unknown) => void;
   readonly #clock: () => number;
   readonly #bodies = new Map<string, Body>();
@@ -326,10 +357,11 @@ export class Supervisor {
    * It holds down the noise and nothing else: an outage is one message to a parent instead
    * of one per request that settles during it. An id goes in when delivery to it throws an
    * {@link UnprovisionedError} and comes out the moment `#deliver` returns without throwing
-   * — including the early return, which means nothing is queued for it and so nothing is
-   * stuck. Delivery that failed some other way marks nothing, because what the mark means to
-   * the stall read below is "no body and no way to get one", which a store that could not be
-   * written is not a report of.
+   * — including its early returns, neither of which is a provisioning failure: nothing was
+   * queued, or the mail was already answered with a body, and the second of those is
+   * `#revived`'s to report rather than this mark's. Delivery that failed some other way
+   * marks nothing, because what the mark means to the stall read below is "no body and no
+   * way to get one", which a store that could not be written is not a report of.
    *
    * **Deliberately not a fourth status on the record.** In the store it would make
    * "unreachable" something an agent *is*, which needs a way back out that nothing has asked
@@ -340,6 +372,38 @@ export class Supervisor {
    * agent settling is about to wake, so only "we tried and it failed" picks out a stuck one.
    */
   readonly #unreachable = new Set<string>();
+  /**
+   * The agents already given a body in answer to the mail they are still holding.
+   *
+   * **One message buys one body.** Revival leaves the message pending — an agent continuing
+   * an unfinished turn is not at the boundary where a message begins one — so without this
+   * the message that triggered a revival is still at the head of the mailbox when the new
+   * body dies, and `#ended` → `#settle` → `#deliver` reads it as a fresh instruction. An
+   * agent that dies whenever it is given a body is then given one forever, each turn of it
+   * a sandbox created, a boot, a model call and another substrate report posted into a
+   * parent that is awake and spending a turn on each. One parent message, unbounded cost,
+   * and nothing able to say so.
+   *
+   * That is the loop mail-triggering was supposed to prevent, and triggering on mail does
+   * not prevent it on its own: what it rules out is a settle reviving unbidden, not one
+   * instruction being re-read as a new one after every death. **A revival answers the
+   * message that caused it, so a further revival wants a further message** — which is a
+   * bound with no counter and no timer in it, and leaves "what is pending stays pending"
+   * exactly as it was.
+   *
+   * An id goes in when a body is successfully provisioned for a bodiless agent, and comes
+   * out when anything is posted to that agent — a second decision, which buys a second
+   * body — or when the revived body reaches a turn boundary, having got somewhere. Nothing
+   * goes in for a revival that could not be provisioned: no body was made, and
+   * `#unprovisioned` promises the parent its message will be delivered when the agent can be
+   * provisioned again.
+   *
+   * **The stall read needs it for the same reason it needs `#unreachable`.** Mail for an
+   * agent that will not be revived again is not work about to happen either, and a bodiless
+   * agent holding mail nothing will act on is invisible to the backstop without this — the
+   * same silent stall in a different coat.
+   */
+  readonly #revived = new Set<string>();
   /**
    * Everything that changes state, one at a time.
    *
@@ -368,10 +432,8 @@ export class Supervisor {
       });
     this.#onStalled =
       options.onStalled ??
-      ((waiting) => {
-        process.stderr.write(
-          `every agent in ${this.#store.run} is waiting and nothing is pending: ${waiting.join(', ')}\n`,
-        );
+      ((stalled) => {
+        process.stderr.write(`${describeStall(this.#store.run, stalled)}\n`);
       });
     this.#onFailure =
       options.onFailure ??
@@ -399,20 +461,63 @@ export class Supervisor {
    * one is armed, and waiting for timers to expire before saying so would delay the
    * diagnosis and change nothing about it.
    *
-   * **Mail for an agent that cannot be reached is not work about to happen.** A pending
-   * message counts here on the grounds that delivery will wake somebody; where delivery is
-   * what failed, that grounds is gone, and counting it anyway reports a tree that has
-   * stopped as a tree that is working — the one outcome this read exists to prevent. So a
-   * marked agent's mailbox is read as empty, and this is the backstop for a parent that was
-   * told its child had no body and did nothing about it.
+   * **Mail that delivering would do nothing with is not work about to happen.** A pending
+   * message counts here on the grounds that delivery will wake somebody. That grounds is
+   * gone where delivery is what failed, and gone again where the message has already been
+   * answered with a body the agent did not survive — see `#revived` — and counting it
+   * anyway in either case reports a tree that has stopped as a tree that is working, the
+   * one outcome this read exists to prevent. So such an agent's mailbox is read as empty,
+   * and this is the backstop for a parent that was told its child had no body and did
+   * nothing about it.
+   *
+   * **One window makes `working` with no body transient rather than terminal**, and it is
+   * this getter's to know about because it is public. `#deliver` saves `working` before it
+   * boots on the dormant path, so between those two lines an agent that is about to be
+   * woken looks exactly like one whose body ended. Nothing in the supervisor can see it:
+   * `stalled` is read from `#settle`, on the serial queue, after every `#deliver` of the
+   * pass has returned. A test that reads this getter mid-delivery would.
    */
   get stalled(): boolean {
-    const live = this.#store.ids().filter((id) => this.#store.agent(id).state.status !== 'dismissed');
+    const live = this.#live();
     if (live.length === 0) return false;
-    return live.every((id) => {
-      const agent = this.#store.agent(id);
-      return agent.state.status === 'waiting' && (agent.mailbox.length === 0 || this.#unreachable.has(id));
-    });
+    return live.every((id) => this.#cannotMove(id));
+  }
+
+  /** Every agent that has not been dismissed. A dismissed one is finished, not stuck. */
+  #live(): string[] {
+    return this.#store.ids().filter((id) => this.#store.agent(id).state.status !== 'dismissed');
+  }
+
+  /**
+   * One condition, covering three shapes of stuck.
+   *
+   * **An agent cannot move when it has nothing to act on and is not working in a body.**
+   * That is the agent suspended with an empty mailbox, the agent whose mail cannot be
+   * delivered because nothing can be provisioned for it, and the agent left with no body
+   * and nothing pending to give it one. The last is the backstop, and it holds whatever
+   * ended that agent — a signal, an OOM, a daemon that went away, a cause nobody has found
+   * yet — which is what makes this a read of the whole class rather than a fix for one
+   * member of it.
+   *
+   * The pairs it has to get right, since two of them look alike: `working` with a body can
+   * move, because that is a turn in flight; `working` with no body but with mail can move,
+   * because delivery is about to give it one; `working` with no body and nothing pending
+   * cannot, because nothing will.
+   *
+   * **Mail already answered with a body does not count either**, for the same reason mail
+   * to an agent nothing can provision does not: delivering it would do nothing. A revival
+   * answers the message that caused it, so the message left pending behind a body that then
+   * died will not produce another one — see `#revived`. Without this clause that agent
+   * reads as work about to happen forever, which is this whole class of silent stall with
+   * one more cause in it. The mark only ever describes a `working` agent with no body,
+   * which is why it is read against that status rather than on its own.
+   */
+  #cannotMove(id: string): boolean {
+    const agent = this.#store.agent(id);
+    const working = agent.state.status === 'working';
+    const inABody = working && this.#bodies.has(id);
+    const nothingDeliveryWouldDo = this.#unreachable.has(id) || (working && this.#revived.has(id));
+    return !inABody && (agent.mailbox.length === 0 || nothingDeliveryWouldDo);
   }
 
   /**
@@ -515,6 +620,24 @@ export class Supervisor {
   async #shutdown(): Promise<void> {
     this.#closing = true;
     for (const id of [...this.#bodies.keys()]) await this.#suspend(id);
+
+    // **The sweep is here because the loop above cannot be the whole of it.** It walks
+    // `#bodies`, which can only ever hold what nothing has already dropped — and `#ended`
+    // drops every body that ends on its own. Each of those destroys its own sandbox, so on
+    // the ordinary path this finds nothing; what it is for is the one that failed, where
+    // the alternative is a container held until some later run of the same name.
+    //
+    // **It ends bodies and releases no workspace** — see {@link SandboxDriver.destroyAll},
+    // where that distinction is held — so a run stopped for the day resumes from everything
+    // it had.
+    //
+    // **Swallowed, and this is the one place that is right.** A shutdown must not fail
+    // through the action a person takes to stop for the day, which is the argument
+    // `#suspend`'s store write already carries; and what this cleans up was reported when
+    // its own destroy failed, so a failure here is a second account of a leak already said
+    // once rather than a diagnosis going missing.
+    await this.#driver.destroyAll().catch(() => {});
+
     await this.#store.close();
   }
 
@@ -694,11 +817,43 @@ export class Supervisor {
    * the tree stops, and no failure is reported anywhere. An agent that reported first is in
    * `waiting` by the time its body ends, which is also what a suspension leaves behind, so
    * neither is mistaken for a death.
+   *
+   * **The stored state is still deliberately left as it is, and that now means something
+   * different.** It was left alone so the parent owned the decision; what changed is that
+   * the decision is one the parent can carry out. An agent left `working` with no body is
+   * given one the moment anybody addresses it — see `#deliver` — so leaving the state is
+   * what holds the agent's place until its parent says whether to continue it, rather than
+   * what made it unreachable for the rest of the run.
    */
   async #ended(id: string, body: Body, how: string): Promise<void> {
     if (this.#bodies.get(id) !== body) return;
     this.#disarm(id);
     this.#bodies.delete(id);
+
+    // **Dropping the body from the map is what makes the container this call's to release,
+    // and here is the only place left that can.** `#shutdown` walks `#bodies`, so the line
+    // above has just put this one out of its reach; nothing else holds a handle on it. The
+    // rule the two are easiest to read as one is: the two places that take a body out of
+    // `#bodies` are the two places that destroy its sandbox, and this is the other one.
+    //
+    // **Above every return below it, and that is the point rather than an ordering detail.**
+    // A body whose agent already reported ends `waiting` and returns at the status guard;
+    // an intended ending and a shutdown return at the line after this. Each of those is a
+    // container, and the leak is not specific to the ending this method reports on.
+    //
+    // **What is left running is not idle.** A sandbox's PID 1 is the keepalive, so the exec
+    // dying leaves a container up and sleeping — no exit to notice, nothing in `docker
+    // events` but the `exec_die`. `destroyAll()` sweeps by the run's label and would reap
+    // it, but only on a *later* run of the same name, which is not a lifetime.
+    //
+    // **Reported rather than swallowed**, unlike {@link Supervisor.#suspend}'s. A suspension
+    // has a caller and an outcome; this has neither, so a destroy that fails here is a
+    // container held for the rest of the run with nobody in a position to notice — the
+    // supervisor's own trouble, in the exact sense {@link SupervisorOptions.onFailure} is
+    // for, and nothing an agent can act on. `#failed` never rethrows, so the report below
+    // still goes out.
+    await body.sandbox.destroy().catch((error: unknown) => this.#failed(id, error));
+
     if (body.intended === true || this.#closing) return;
 
     const agent = this.#store.agent(id);
@@ -715,10 +870,20 @@ export class Supervisor {
     // that. Appended rather than substituted, because the ending is the fact and this is the
     // account of it — and omitted where there is nothing, rather than reported as an empty
     // one.
+    //
+    // **And what it says about what is still available is load-bearing.** It said
+    // `terminated` while that was the whole truth; it is not one any more. The agent's
+    // transcript and workspace survive its body, and addressing it gives it a new one — so
+    // a report a parent reads as a death has it replace a child it could have continued,
+    // throwing away the work that child had already done. That choice is the parent's and
+    // this is the account it makes it on.
     const said = body.said.trim();
     await this.#post(agent.parent, {
       from: id,
-      content: `${id} terminated: ${how}${said === '' ? '' : `. It last said: ${said}`}`,
+      content:
+        `${id}'s body ended: ${how}${said === '' ? '' : `. It last said: ${said}`}. Its work is ` +
+        `kept: send it a message to have it carry on from where it stopped, in a new body. ` +
+        `Replacing it instead discards what it has already done.`,
       substrate: true,
     });
     await this.#settle();
@@ -850,6 +1015,10 @@ export class Supervisor {
    */
   async #turn(id: string, message: string, residency: number): Promise<void> {
     const agent = this.#store.agent(id);
+    // A revived body that reached a boundary got somewhere, so whatever bound was spent on
+    // giving it one is spent history rather than a standing refusal — see `#revived`. The
+    // loop that mark exists to stop is bodies that die without ever reaching here.
+    this.#revived.delete(id);
     await this.#store.save(id, { ...agent, state: { status: 'waiting', request: null } });
     await this.#post(agent.parent, { from: id, content: message });
     if (this.#store.agent(id).mailbox.length === 0) this.#residency(id, residency);
@@ -1226,6 +1395,10 @@ export class Supervisor {
     }
     const agent = this.#store.agent(to);
     if (agent.state.status === 'dismissed') return;
+    // A second decision buys a second body. Everything that reaches an agent arrives here,
+    // so this is the one place the bound in `#revived` is re-armed, and it is re-armed by
+    // the only thing that should: somebody choosing to address the agent again.
+    this.#revived.delete(to);
     await this.#store.save(to, { ...agent, mailbox: [...agent.mailbox, message] });
   }
 
@@ -1243,10 +1416,17 @@ export class Supervisor {
    * be written, a channel that broke. A child with no body is its parent's business.
    *
    * **The wording is load-bearing on both sides.** It cannot be read as a death: the agent
-   * never started, has not ended, and is still addressable, and a parent that believed
+   * is still addressable and whatever it has done is kept, and a parent that believed
    * otherwise would replace a child that is about to wake up fine. And it cannot be read as
    * a loss: what was queued is still queued, and a parent whose fair reading was "my message
    * did not arrive" would send it again, waking the child to two copies of its instruction.
+   *
+   * **It has two callers now and says only what is true of both.** It used to say the agent
+   * "has not started and has not ended", which was true of the only caller there was — a
+   * dormant agent being woken — and is false of the other: an agent whose body ended and
+   * whose revival could not be provisioned has both started and ended. What the two share
+   * is the part that matters to a parent, that the agent is still there and still
+   * addressable, so that is what it says.
    */
   async #unprovisioned(id: string, error: unknown): Promise<void> {
     const said = error instanceof Error ? error.message : String(error);
@@ -1254,9 +1434,9 @@ export class Supervisor {
       from: id,
       substrate: true,
       content:
-        `${id} could not be given a body: ${said}. It has not started and has not ended, and it ` +
-        `is still addressable. Anything queued for it is still queued and will be delivered when ` +
-        `it can be provisioned again.`,
+        `${id} could not be given a body: ${said}. It is not gone — whatever work it has is kept ` +
+        `and it is still addressable. Anything queued for it is still queued and will be ` +
+        `delivered when it can be provisioned again.`,
     });
   }
 
@@ -1316,8 +1496,11 @@ export class Supervisor {
       for (const id of this.#store.ids()) {
         try {
           await this.#deliver(id);
-          // Including `#deliver`'s early return, which means nothing was queued — so
-          // nothing is stuck, and an agent that is reached again is reportable again.
+          // Including `#deliver`'s early returns. Nothing was queued, or what was queued
+          // has already been answered with a body — and neither is this mark's meaning,
+          // which is a body that could not be provisioned. The second case is still a
+          // stopped agent, and `#revived` is what says so to the stall read; clearing here
+          // only means an agent that is reached again is reportable again.
           this.#unreachable.delete(id);
         } catch (error) {
           // **Only a missing body is caught here.** Everything else `#deliver` can throw is
@@ -1346,7 +1529,19 @@ export class Supervisor {
     }
     if (this.#reported) return;
     this.#reported = true;
-    this.#onStalled(this.#store.ids().filter((id) => this.#store.agent(id).state.status === 'waiting'));
+    // Split by what the person should do about each. An agent that is `waiting` and
+    // reachable is behaving and is part of the ordinary deadlock; anything else here is
+    // the cause — a body that ended, or one that could not be provisioned at all.
+    const live = this.#live();
+    this.#onStalled({
+      waiting: live.filter((id) => this.#waiting(id)),
+      stopped: live.filter((id) => !this.#waiting(id)),
+    });
+  }
+
+  /** Waiting in the ordinary way: suspended, and reachable if anything is sent to it. */
+  #waiting(id: string): boolean {
+    return this.#store.agent(id).state.status === 'waiting' && !this.#unreachable.has(id);
   }
 
   /**
@@ -1362,7 +1557,59 @@ export class Supervisor {
   async #deliver(id: string): Promise<void> {
     const agent = this.#store.agent(id);
     const [message, ...rest] = agent.mailbox;
-    if (message === undefined || agent.state.status !== 'waiting') return;
+    // **Mail is what triggers everything below, a revival included**, and the supervisor
+    // revives nothing it was not asked to: an agent whose body ended and that nobody has
+    // addressed stays exactly as it is. Making it automatic would move the judgment of
+    // whether to retry out of the parent's reasoning and into this file, where no charter
+    // can reach it.
+    //
+    // It is not on its own what keeps an agent that dies whenever it is given a body out of
+    // a loop. Triggering on mail rules out a settle reviving unbidden; the message a
+    // revival leaves pending would still be re-read as a new instruction after every death.
+    // The bound on that is `#revived`, below.
+    if (message === undefined) return;
+
+    // **An agent with no body gets one when somebody addresses it**, whatever left it
+    // without one. This is `resume()`'s rule applied at delivery instead of at recovery:
+    // an agent recorded as working is owed a step, and that is as true of one whose body
+    // died mid-run as of one whose supervisor was restarted. Without it the state is a
+    // tombstone — `#ended` reports the ending and deliberately leaves the stored state
+    // alone so the parent owns the decision, and the obvious decision, telling the child
+    // to carry on from a transcript and workspace that are both sitting there intact,
+    // would be the one thing the parent could not do.
+    //
+    // **What is pending stays pending.** An agent continuing an unfinished turn is not at
+    // the boundary where a message begins one, so the mailbox and the stored state are
+    // left untouched and the message is delivered by the ordinary path at the boundary
+    // this agent reaches. That is also why this branch needs no restore on failure, where
+    // the `waiting` path below does: it writes nothing before `#boot`, so an
+    // `UnprovisionedError` leaves the store exactly as it found it and `#settle`'s
+    // existing handling reports it with the message still queued. And there is no double
+    // boot behind it — `#settle` visits each id once per pass, and a revived agent holds a
+    // body by the time anything looks again.
+    //
+    // **A revival answers the message that caused it, and a further one wants a further
+    // message.** The message stays pending, so without the mark it is still at the head of
+    // this mailbox when the new body dies and reads as a fresh instruction on the way back
+    // through here — one parent message buying bodies forever, at a sandbox and a model
+    // call each, with `#cannotMove` reading the driving message as work about to happen and
+    // staying silent throughout. The mark is what makes the branch bounded; `#revived` is
+    // where the whole of that reasoning is. It is taken only where a body was actually
+    // provisioned, because a revival that could not be is one the parent has been promised
+    // a retry of.
+    if (agent.state.status === 'working' && !this.#bodies.has(id)) {
+      if (this.#revived.has(id)) return;
+      await this.#boot(id, true);
+      this.#revived.add(id);
+      return;
+    }
+
+    // **What is left of the old guard is what it always meant**: do not deliver to an
+    // agent that is working *in a body*, because that is an in-flight turn, which a
+    // message's arrival does not interrupt. It will come back to a boundary on its own and
+    // the message is delivered there. A dismissed agent falls out here too, as it did
+    // before, although nothing posts to one.
+    if (agent.state.status !== 'waiting') return;
 
     const answering = agent.state.request;
     const content = render(message);
