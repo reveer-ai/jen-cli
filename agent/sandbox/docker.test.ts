@@ -93,6 +93,20 @@ async function outstanding(): Promise<{ containers: number; workspaces: number }
   };
 }
 
+/** The workspaces of one agent of one run, by the labels creation applied. */
+async function workspacesOf(run: string, agentId: string): Promise<string[]> {
+  return lines(
+    'volume',
+    'ls',
+    '--filter',
+    `label=jen.run=${run}`,
+    '--filter',
+    `label=jen.agent=${agentId}`,
+    '--format',
+    '{{.Name}}',
+  );
+}
+
 /** Subprocesses of this one that have not been reaped. */
 async function descendants(): Promise<number> {
   const { stdout } = await run('ps', ['-ax', '-o', 'pid=,ppid=']);
@@ -208,6 +222,82 @@ describe('the workspace outlives the sandbox', () => {
 
     await second.destroy();
     await subject.releaseWorkspace(agent.id);
+  });
+});
+
+describe('a workspace belongs to one agent of one run', () => {
+  // A second run started from the same record hands its agents the same ids — the record is
+  // what names them, and running one record twice is what `agent/LIVE-PASS.md` asks for. So
+  // the id here is deliberately not `request()`'s, which embeds RUN and so could never
+  // collide across runs no matter what the naming did.
+  const shared = 'chief-1';
+
+  it('gives a second run of the same record its own workspace', async () => {
+    const theirRun = `${RUN}-second`;
+    const mine = driver();
+    // A driver of its own, because a run id is not on the interface: a driver is constructed
+    // for a run and this is the only way a second run exists at all.
+    const theirs = new DockerSandboxDriver({ run: theirRun });
+
+    const first = await mine.create(request({ id: shared }));
+    const second = await theirs.create(request({ id: shared }));
+
+    try {
+      expect((await inside(first, ['sh', '-c', 'echo ours > /workspace/note'])).code).toBe(0);
+
+      // Where the defect put the second run's agent: in a workspace already holding another
+      // run's files, with a transcript that knows nothing about them. Keyed on the agent
+      // alone, the file is simply there and nothing reports anything wrong.
+      expect((await inside(second, ['cat', '/workspace/note'])).code).not.toBe(0);
+      expect((await inside(second, ['sh', '-c', 'ls -A /workspace'])).out).toBe('');
+
+      // And the second run writing does not reach back into the first run's work.
+      expect((await inside(second, ['sh', '-c', 'echo theirs > /workspace/note'])).code).toBe(0);
+      expect(await inside(first, ['cat', '/workspace/note'])).toMatchObject({ out: 'ours', code: 0 });
+
+      // The assertion that only means anything once the name carries the run: a sweep by
+      // `jen.run` selects that run's volumes and none of the other's. While a volume could be
+      // shared across runs, `#ensureWorkspace` labelled it for whoever created it first — so
+      // this query both missed volumes an earlier run had made and claimed volumes a later
+      // run was still using.
+      const ours = await workspacesOf(RUN, shared);
+      const yours = await workspacesOf(theirRun, shared);
+      expect(ours).toHaveLength(1);
+      expect(yours).toHaveLength(1);
+      expect(ours).not.toEqual(yours);
+    } finally {
+      await first.destroy();
+      await second.destroy();
+      await mine.releaseWorkspace(shared);
+      // The second run's workspace carries a label this file's `afterAll` sweep does not
+      // match, so it is released here rather than left for it — the same reason *does not
+      // reach another run's sandboxes* ends its own.
+      await theirs.releaseWorkspace(shared);
+    }
+  });
+
+  it('finds the workspace as it was left when the run is taken over', async () => {
+    // The case this change could plausibly break, so it is checked rather than assumed.
+    // Taking over a run keeps that run's name, so a driver constructed by the supervisor
+    // that took over has to land on the same volume the first one made.
+    const agent = request();
+    const before = driver();
+
+    const started = await before.create(agent);
+    expect((await inside(started, ['sh', '-c', 'echo left > /workspace/note'])).code).toBe(0);
+    await started.destroy();
+
+    const after = driver();
+    const resumed = await after.create(agent);
+    try {
+      expect(await inside(resumed, ['cat', '/workspace/note'])).toMatchObject({ out: 'left', code: 0 });
+      // One volume, not two: the recovered driver reused the workspace rather than making
+      // its own beside it.
+      expect(await workspacesOf(RUN, agent.id)).toHaveLength(1);
+    } finally {
+      await resumed.destroy();
+      await after.releaseWorkspace(agent.id);
+    }
   });
 });
 

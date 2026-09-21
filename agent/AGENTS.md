@@ -391,15 +391,16 @@ and it breaks by deleting data rather than by erroring.
 Concurrent creation for *different* agents is fine: the container name, the workspace name and
 the labels all derive from the agent id, so nothing is shared.
 
-**Two agents in different runs with the same id are not different agents to `workspaceName`,
-though.** It is keyed on the agent id alone and `slug` is a deterministic digest, so a second
-run of the same record hands its `chief-1` the volume the first run's `chief-1` filled — while
-the store, which is `~/.jen/runs/<run>/agents/<id>`, keeps them apart. An agent then starts its
-first turn in a workspace already holding another run's files. The labels do not give this
-away either: creation only labels a volume it *makes*, so a reused volume still carries
-`jen.run` naming whoever created it first, and a label sweep both misses volumes an earlier run
-left and removes volumes a later run is still using. Found by running the same record three
-times under different run names, which is what `LIVE-PASS.md` asks for.
+**Two agents in different runs with the same id are not the same agent either**, and
+`workspaceName` is keyed on the run as well as the agent so that they cannot collide. Ids come
+from the record, so running one record twice — which is what `LIVE-PASS.md` asks for — produces
+two `chief-1`s, and the store keeps them apart at `~/.jen/runs/<run>/agents/<id>`. The volume
+name agrees with the store rather than disagreeing with it. Recovery is the case that makes
+this look riskier than it is and is not: taking over a run keeps the run's name, so every
+volume name is stable across it and a resumed agent finds its files as it left them. One
+consequence worth naming, because a sweep depends on it: creation labels a volume only when it
+*makes* one, so `jen.run` would be a lie on any volume that outlived the run that made it —
+and it cannot be, because no volume is ever reachable from a second run.
 
 ## What a sandbox image has to provide
 
