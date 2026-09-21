@@ -29,6 +29,16 @@ structural criterion is unaffected.
   mid-run `402` the same way: *exceed your available credits given your current in-flight
   requests* is the concurrency form and settles on its own, *requires more credits, or fewer
   max_tokens* does not.
+
+  **At fan-out it is concurrency and not usage that empties the account**, which is the
+  form that surprises. Every in-flight request reserves its whole output window, so eleven
+  `claude-opus-5` bodies at once reserve about $18 against whatever the balance actually is,
+  and each one dies with the concurrency `402` while the spend to that point is a fraction
+  of it. Budget a wide pass as *peak containers × the model's output window × its completion
+  price*, not as what you expect it to cost. The tree does not spin when this happens — the
+  revival bound holds each bodiless agent at one body per message — so what you see is a
+  tree of agents recorded `working` with mail queued and almost no containers up, and the
+  stall line naming them the moment the last body goes.
 - For §3 only: `CLAUDE_OAUTH_TOKEN` in that same environment, which `claude setup-token`
   mints from a Claude subscription. **It must be a value an environment variable can
   carry.** `agent-sandbox` forbids a secret reaching a file, inside the sandbox or outside
