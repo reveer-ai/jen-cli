@@ -68,11 +68,13 @@ From there, a stage is a skill you ask your assistant to run against a task — 
 
 A stage may run with nobody watching, and a denied action is not a prompt an unattended run can wait out. That is why this section exists — but it is no longer a list you have to write.
 
-**A session judges each action on what the action is**, rather than matching it against permissions named in advance. Installing your declared dependencies, running your typecheck, your linter, your build, your tests, the one-off command a task turns out to need — ordinary development work needs no entry anywhere, and nothing about your project has to be enumerated for the pipeline to run it.
+**Run a stage in a permission mode that judges each action on what the action is**, rather than matching it against permissions named in advance — in Claude Code, that is auto mode. Under it, installing your declared dependencies, running your typecheck, your linter, your build, your tests, the one-off command a task turns out to need — ordinary development work needs no entry anywhere, and nothing about your project has to be enumerated for the pipeline to run it.
+
+That judgment belongs to the mode, not to jen: jen launches no session, so it is whoever starts a stage who chooses it. A session in the default mode asks before each such command instead. With you watching, that is only a prompt to answer; an unattended invocation has nobody to answer it, so it has to select the judging mode itself (`claude --permission-mode auto …`).
 
 jen grants nothing on your behalf, deliberately. It chooses what it ships long before your project exists, so any list it wrote would be a guess at a toolchain it never saw — granting entries you have no use for while missing every one you depend on.
 
-**`.claude/settings.json` is still yours, and still read.** `jen init` writes it with an empty `allow` list, as the seat for a rule you actually want: something to permit that a per-action judgment would otherwise stop, or to deny that it would otherwise let through. An entry you put there is in force in every stage's session.
+**`.claude/settings.json` is still yours, and still read.** `jen init` writes it with an empty `allow` list, as the seat for a rule you actually want: something to permit that a per-action judgment would otherwise stop, or to deny that it would otherwise let through. An entry you put there is in force in a stage's session wherever your assistant reads this project's settings — for Claude Code, once the project is trusted, which it asks the first time you open the project interactively.
 
 ```json
 "Bash(terraform state:*)"
@@ -80,7 +82,7 @@ jen grants nothing on your behalf, deliberately. It chooses what it ships long b
 
 Entries you add, not a file to paste over the one jen wrote — replacing it drops whatever else the file holds, and that loss surfaces as behaviour in the middle of a run rather than as an error. A rule to permit goes in the empty `allow` list jen leaves you; a rule to deny goes in a `deny` list beside it, which you add, since jen ships no `deny` key to fill in.
 
-The tracker's own tools are granted where a stage is invoked rather than here, since their identifiers differ per install.
+The tracker's own tools come from your assistant's own MCP configuration — the tracker server you have connected to it — rather than from this file, since their identifiers differ per install. jen neither ships that configuration nor supplies it at launch; a stage can reach the tracker only if the session you invoke it from already can.
 
 **On a project installed before this changed, the entries jen once wrote are still in your file, and they are yours** — to keep or to remove. `.claude/settings.json` is yours from the moment it exists and `jen update` never rewrites it, so no version you take will empty it for you. Removing them is the better default. A matching entry resolves *before* the judgment is made rather than alongside it, so each one exempts everything it covers from review for as long as it sits there — and `Bash(gh:*)`, which jen used to ship, covers the approving review and the merge at the end of the pipeline. Treat every entry as live until you have deleted it; do not assume the newer mode has already made one inert.
 

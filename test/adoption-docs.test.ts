@@ -56,6 +56,18 @@ describe('the permissions chapter', () => {
   });
 
   /**
+   * The judgment used to arrive with the executor, which launched every session in auto mode and
+   * handed it the tracker's MCP configuration. jen launches nothing now, so both depend on how the
+   * stage is invoked — and a chapter that states them as facts promises what nothing supplies.
+   */
+  it('makes the judgment the invoker\u2019s mode, and the tracker tools the adopter\u2019s own', () => {
+    expect(chapter).toMatch(/judgment belongs to the mode, not to jen/);
+    expect(chapter).toMatch(/unattended invocation .* has to select the judging mode itself/);
+    expect(chapter).toMatch(/tracker's own tools come from your assistant's own MCP configuration/);
+    expect(chapter, 'nothing grants them where a stage is invoked any more').not.toMatch(/granted where a stage is invoked/);
+  });
+
+  /**
    * The starting shape jen used to ship — `npm run build`, `npm run lint`, `npm run typecheck`,
    * `npm test` — and the `pytest`/`ruff`/`mypy` example that told an adopter outside that
    * ecosystem to replace it. An adopter is not required to name any of them now, and a chapter
@@ -72,7 +84,7 @@ describe('the permissions chapter', () => {
   // has contents, which is why it is shown as entries rather than as a document.
   it('says the file is the project\u2019s, in force in a stage\u2019s session, and shows entries not a file', () => {
     expect(chapter).toMatch(/`\.claude\/settings\.json` is still yours/);
-    expect(chapter).toMatch(/in force in every stage's session/);
+    expect(chapter).toMatch(/in force in a stage's session/);
     expect(chapter).toMatch(/[Ee]ntries you add, not a file to paste over/);
     expect(chapter, 'a whole-file example is what gets pasted over a file that already has one').not.toContain('"permissions"');
   });

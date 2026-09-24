@@ -25,15 +25,23 @@ The adopter's documentation SHALL state what a stage session is permitted to do,
 state that an adopter is not required to enumerate their project's commands for the pipeline
 to run them.
 
-It SHALL state that each action is judged on what it is rather than matched against a list,
-so ordinary development work — installing declared dependencies, running the project's
-checks, the one-off command a task turns out to need — needs no entry. It SHALL NOT tell an
+It SHALL state that, in a permission mode that judges each action on what it is rather than
+matching it against a list, ordinary development work — installing declared dependencies,
+running the project's checks, the one-off command a task turns out to need — needs no entry.
+It SHALL present that judgment as a property of the permission mode the stage is invoked in,
+not as something jen supplies, and SHALL state that an unattended invocation has to select
+that mode itself, since jen launches no session and nobody is present to answer a prompt.
+
+It SHALL state that the tracker's tools reach a stage's session through the adopter's own
+assistant configuration for the tracker, and SHALL NOT present jen as granting or supplying
+them. It SHALL NOT tell an
 adopter to add their typecheck, lint, build, or test commands as a condition of unattended
 runs, and SHALL NOT present jen as shipping a starting shape for any ecosystem's
 conventional command names.
 
 It SHALL state that the tracked assistant configuration is theirs to add to where they do
-want a rule of their own, and that an entry there is in force in a stage's session. Any
+want a rule of their own, and that an entry there is in force in a stage's session once the
+assistant treats the project as trusted. Any
 example configuration the documentation shows SHALL be presented as the entries an adopter
 adds, and SHALL NOT be presented as a complete file, so that copying it cannot silently
 drop what the file already holds.
@@ -45,6 +53,18 @@ Because the assistant configuration is written once at installation and owned by
 - **WHEN** the adopter's documentation is read
 - **THEN** it states that the project's own check commands need no permission entry
 - **AND** it does not name them as something the adopter must grant
+
+#### Scenario: An adopter invokes a stage unattended
+
+- **WHEN** the adopter's documentation is read by someone starting a stage with nobody watching
+- **THEN** it states that the invocation has to select the permission mode that judges each action
+- **AND** it does not present that judgment as something jen provides
+
+#### Scenario: A stage needs the tracker's tools
+
+- **WHEN** the documentation describes where the tracker's tools come from
+- **THEN** it names the adopter's own assistant configuration
+- **AND** it does not present jen as granting them
 
 #### Scenario: An adopter's stack is not the one jen assumes
 
