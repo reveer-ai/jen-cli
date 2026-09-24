@@ -89,7 +89,6 @@ export const SKILLS = [
   'review-task',
   'test-task',
   'deliver-task',
-  'setup-jen',
 ] as const;
 
 const SKILLS_TARGET_DIR = '.claude/skills';

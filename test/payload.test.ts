@@ -33,22 +33,19 @@ describe('the payload declaration', () => {
       'review-task',
       'test-task',
       'deliver-task',
-      'setup-jen',
     ]);
     expect(skills!.members).toHaveLength(SKILLS.length);
   });
 
-  // The set is the skills jen ships, not the pipeline's stages. `setup-jen` is triggered
-  // by no status and appears in no stage table, and is a member on exactly the terms the
-  // other six are — a payload addition needs no migration, so the next `jen update`
-  // writes it into an already-adopted project.
+  // The set is the skills jen ships, not the pipeline's stages. `refine-epic` is triggered
+  // by no status, and is a member on exactly the terms the other five are.
   it('holds a shipped skill that no pipeline status triggers', () => {
-    expect(SKILLS).toContain('setup-jen');
-    expect(payloadFiles().find((entry) => entry.file.target.includes('setup-jen'))).toEqual({
+    expect(SKILLS).toContain('refine-epic');
+    expect(payloadFiles().find((entry) => entry.file.target.includes('refine-epic'))).toEqual({
       file: {
-        source: '.claude/skills/setup-jen/SKILL.md',
-        staged: 'skills/setup-jen/SKILL.md',
-        target: '.claude/skills/setup-jen/SKILL.md',
+        source: '.claude/skills/refine-epic/SKILL.md',
+        staged: 'skills/refine-epic/SKILL.md',
+        target: '.claude/skills/refine-epic/SKILL.md',
         format: 'markdown',
       },
       stamped: true,

@@ -9,20 +9,15 @@ const stub = readRepoFile('scaffold/registry.yaml');
 const registry = readRepoFile('registry.yaml');
 const resources = (parse(registry) as { resources: Resource[] }).resources;
 
-function identities(surface: string): Resource[] {
-  return resources.filter((entry) => entry.kind === 'identity' && entry.surface === surface);
-}
-
 describe('the registry stub', () => {
-  it('documents the identity shape', () => {
-    // The stub is read far more often than it is filled in by hand, so the shape has to be
-    // legible from the file itself rather than only from the skill that writes it.
-    expect(stub).toContain('kind: identity');
-    for (const role of ['design', 'dev', 'deliver']) expect(stub).toContain(role);
+  it('documents the entry shape', () => {
+    // Filled in by hand, so the shape has to be legible from the file itself.
+    expect(stub).toContain('kind: repository');
+    expect(stub).toContain('kind: project-management');
   });
 
   it('still reads as unfilled', () => {
-    // Documenting the identities must not accidentally declare one. `jen init` writes this
+    // Documenting the shape must not accidentally declare an entry. `jen init` writes this
     // file once and never returns to it, so a stray entry here is permanent in every
     // project installed afterward.
     expect(stub).toContain('resources: []');
@@ -30,7 +25,7 @@ describe('the registry stub', () => {
   });
 
   it('says where credentials do not go', () => {
-    expect(stub).toMatch(/never authenticates|no private key|never meet on disk/i);
+    expect(stub).toMatch(/never authenticates|no private key/i);
   });
 });
 
@@ -39,34 +34,13 @@ describe("jen's own registry", () => {
     // Recorded by editing the `resources:` entry in place. A YAML round-trip would strip
     // every comment here and reformat what it kept, which is most of the file's value.
     expect(registry).toContain('# Every resource this project\'s workflow acts on');
-    expect(registry).toContain('kind: identity');
+    expect(registry).toContain('kind: project-management');
   });
 
   it('names every resource and says what kind it is', () => {
     for (const entry of resources) {
       expect(entry.name, `an entry has no name: ${JSON.stringify(entry)}`).toBeTruthy();
       expect(entry.kind, `${entry.name} has no kind`).toBeTruthy();
-    }
-  });
-
-  it('carries one git-host identity per role', () => {
-    expect(identities('git-host').map((entry) => entry.role).sort()).toEqual(['deliver', 'design', 'dev']);
-  });
-
-  it('carries exactly one tracker agent, belonging to no role', () => {
-    const agents = identities('tracker');
-    expect(agents).toHaveLength(1);
-    // The asymmetry is the design, not an omission: three agents would differ only in the
-    // name on a comment. A `role` here would be the first step back toward three.
-    expect(agents[0]!.role).toBeUndefined();
-  });
-
-  it('records the repository each application is installed on', () => {
-    const repositories = resources.filter((entry) => entry.kind === 'repository').map((entry) => entry.name);
-    for (const identity of identities('git-host')) {
-      expect(repositories, `${identity.name} is installed on an unregistered repository`).toContain(
-        identity.installed_on,
-      );
     }
   });
 
@@ -80,9 +54,9 @@ describe("jen's own registry", () => {
 });
 
 describe('the repository', () => {
-  // The registry names identities and the environment authenticates them, and the two never
-  // meet on disk. This is the net under that rule: a tracked credential is published to
-  // everyone who clones, and survives in history after it is deleted.
+  // The registry names resources and never authenticates them. This is the net under that
+  // rule: a tracked credential is published to everyone who clones, and survives in history
+  // after it is deleted.
   const secrets: [string, RegExp][] = [
     ['a PEM private key', /-----BEGIN [A-Z ]*PRIVATE KEY-----/],
     ['a GitHub token', /\b(gh[pousr]_[A-Za-z0-9]{16,}|github_pat_[A-Za-z0-9_]{20,})\b/],
