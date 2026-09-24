@@ -199,12 +199,12 @@ describe('the scaffold declaration', () => {
     }
   });
 
-  // There is no shared floor to assert. A session decides each action on what the action is,
-  // so no stage depends on an entry here — and an entry is not a redundant grant but a bypass,
-  // matching before the judgment is made. The two calls it would exempt, `gh pr review
+  // There is no shared floor to assert. The session's permission mode judges each action on
+  // what the action is, so no stage depends on an entry here — and an entry is not a redundant
+  // grant but a bypass, matching before the judgment is made. The two calls it would exempt, `gh pr review
   // --approve` and `gh pr merge`, are the two in the pipeline where an independent check is
   // worth most. The array stays so the file keeps its shape: it is the seat a project's own
-  // rules take, and what the run establishes trust for.
+  // rules take, read once the assistant treats the project as trusted.
   it('grants nothing on a project’s behalf', () => {
     const settings = SCAFFOLD.find((file) => file.target === '.claude/settings.json');
     expect(settings, 'the scaffold must still carry assistant settings for a project to fill').toBeDefined();

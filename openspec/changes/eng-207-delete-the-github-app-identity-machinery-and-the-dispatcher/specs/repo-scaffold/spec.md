@@ -6,15 +6,16 @@ Assistant configuration SHALL be split in two. The tracked half, `.claude/settin
 SHALL be present in every clone and SHALL be the project's own — the seat its permissions,
 hooks, and other assistant configuration take when it has any to declare.
 
-jen SHALL NOT grant permissions in it. A session decides each action on what the action is,
-so the workflow's stages depend on no entry jen could write there, and an entry written on a
+jen SHALL NOT grant permissions in it. The session's permission mode judges each action on what
+the action is, so the workflow's stages depend on no entry jen could write there, and an entry written on a
 project's behalf is a guess at a toolchain that did not exist when jen shipped. Seeding the
 file with grants SHALL be understood as costing more than it gives: the entries mislead an
 adopter about what the pipeline needs, and each one exempts what it matches from the judgment
-every other action receives — silently, since nothing in a run reports that a rule matched.
+the session's permission mode otherwise applies to each action — silently, since nothing in a run reports that a rule matched.
 
-The file SHALL still be written and SHALL still be tracked. It is what a stage's session establishes
-trust for, and a project that declares nothing on installation may declare something later
+The file SHALL still be written and SHALL still be tracked. It is the project's seat for its own rules,
+read by any session the adopter's assistant runs in the project once that assistant treats the
+project as trusted, and a project that declares nothing on installation may declare something later
 without jen being involved.
 
 Configuration whose values differ from one install to the next — `.claude/settings.local.json`, which carries MCP server ids meaningless in anyone else's clone — SHALL NOT be tracked.
@@ -35,7 +36,7 @@ Configuration whose values differ from one install to the next — `.claude/sett
 
 - **WHEN** a project adds an entry to the tracked assistant configuration
 - **THEN** it is the project's entry rather than one jen wrote
-- **AND** it is in force in a stage's session
+- **AND** it is in force in a stage's session once the assistant treats the project as trusted
 
 #### Scenario: Per-install configuration is written
 
