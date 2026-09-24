@@ -3,14 +3,12 @@
 ## Purpose
 
 Defines the pipeline a task travels: the ordered stages, the transition that triggers each one, how a stage hands off, which transitions belong to the user rather than to any stage, what a stage does when there is nobody to confirm with, and how a task is routed backward when a stage finds the previous stage's output unusable.
-
 ## Requirements
-
 ### Requirement: Refinement precedes the pipeline and ends in `Todo`
 
 `refine-epic` SHALL turn an idea into an epic and its sub-issue tasks, and SHALL leave everything it produces in `Todo`. `Backlog` SHALL hold unrefined placeholders and `Todo` SHALL hold refined tasks ready to design.
 
-Refinement SHALL label what it produces: an epic SHALL carry the `epic` label and a task SHALL carry the `task` label. The labels SHALL be what identifies which of the two an issue is, so that a reader of the tracker alone — a person or the dispatcher — can tell a task from its parent without inferring it from the issue's shape. Only an issue labelled `task` travels the pipeline; an epic sits in whatever status reflects its children and no stage runs against it.
+Refinement SHALL label what it produces: an epic SHALL carry the `epic` label and a task SHALL carry the `task` label. The labels SHALL be what identifies which of the two an issue is, so that a reader of the tracker alone can tell a task from its parent without inferring it from the issue's shape. Only an issue labelled `task` travels the pipeline; an epic sits in whatever status reflects its children and no stage runs against it.
 
 Promoting a task from `Todo` to `In Design` SHALL be the user's decision. No stage SHALL make that transition.
 
@@ -35,7 +33,7 @@ Promoting a task from `Todo` to `In Design` SHALL be the user's decision. No sta
 
 - **WHEN** a task in `Todo` is moved to `In Design`
 - **THEN** a human made that transition
-- **AND** the pipeline drives itself onward from there, apart from the promotion out of `Pending`, which is the user's as well
+- **AND** every later transition is a stage's, apart from the promotion out of `Pending`, which is the user's as well
 
 ### Requirement: Design confirms with the user when it can, and no stage waits on a reply
 
@@ -73,7 +71,7 @@ No stage SHALL wait on a reply. A stage that needs a human SHALL write what is n
 
 A stage that finds the previous stage's output unusable SHALL move the task back to the status that owns the fix rather than doing that work itself. Review and testing SHALL route to `In Progress`; implementation SHALL route to `In Design` when there is no usable design to implement.
 
-A stage SHALL NOT route a task backward for a reason the record shows it was already routed back for. Where the task's record shows the same objection has already sent it back once, the stage SHALL move it to `Pending` instead and SHALL say in its comment what sent it back each time. Judging whether two objections are the same one SHALL belong to the stage, which is reading the record anyway and is the only actor in the pipeline capable of the comparison; no dispatcher SHALL attempt it by counting transitions.
+A stage SHALL NOT route a task backward for a reason the record shows it was already routed back for. Where the task's record shows the same objection has already sent it back once, the stage SHALL move it to `Pending` instead and SHALL say in its comment what sent it back each time. Judging whether two objections are the same one SHALL belong to the stage, which is reading the record anyway and is the only actor in the pipeline capable of the comparison; counting transitions SHALL NOT stand in for it.
 
 #### Scenario: Review finds the implementation wanting
 
@@ -105,7 +103,7 @@ Every stage session SHALL end in one of exactly two ways: it moves the task to t
 
 `Pending` SHALL mean the task is a human's, and SHALL be where a stage puts anything only a human can settle — a decision the stage cannot make, a blocker it cannot clear, work that has finished and needs a person before it goes on, or a task it judges should stop circling. The comment accompanying the move SHALL say which of those it is, because the status carries only that a human is needed and not why.
 
-No stage SHALL move a task out of `Pending`, and no dispatcher SHALL dispatch from it. Together with `Todo` → `In Design`, moving a task out of `Pending` SHALL be one of the two transitions that are the user's alone.
+No stage SHALL move a task out of `Pending`, and no stage SHALL be started against a task that sits in it. Together with `Todo` → `In Design`, moving a task out of `Pending` SHALL be one of the two transitions that are the user's alone.
 
 A stage status SHALL therefore always mean that a session is working the task or that a session died working it, and SHALL never mean that the task is at rest.
 
@@ -123,7 +121,7 @@ A stage status SHALL therefore always mean that a session is working the task or
 #### Scenario: A task rests in `Pending`
 
 - **WHEN** a task's status is `Pending`
-- **THEN** nothing dispatches against it however long it stays there
+- **THEN** no stage is started against it however long it stays there
 - **AND** the transition out of it is made by a person
 
 #### Scenario: A task is found in a stage's status
@@ -171,7 +169,7 @@ The workflow SHALL define one skill per stage, and the task's presence in that s
 | `In Testing` | `test-task` | `In Delivery`, or back to `In Progress`, or `Pending` |
 | `In Delivery` | `deliver-task` | `Done`, or `Pending` |
 
-Residence in a stage's status SHALL be a sound trigger because no stage leaves a task in its own status: a stage hands off or parks the task at `Pending`, so a task found in a stage's status has either not been picked up or is being worked. Distinguishing those two SHALL be the dispatcher's, from the session's own announcement on the task, and SHALL NOT require reading the task's transition history.
+Residence in a stage's status SHALL be a sound trigger because no stage leaves a task in its own status: a stage hands off or parks the task at `Pending`, so a task found in a stage's status has either not been picked up or is being worked. Whoever starts a stage SHALL distinguish those two from the session's own announcement on the task, and SHALL NOT need to read the task's transition history to do it.
 
 No stage SHALL require any trigger beyond that status, and the pipeline SHALL NOT record a task's position in it anywhere other than the task's own status.
 
@@ -192,3 +190,4 @@ No stage SHALL require any trigger beyond that status, and the pipeline SHALL NO
 - **WHEN** a stage that hands off finishes
 - **THEN** it moves the task to the status of the stage it hands off to
 - **AND** that status is the next stage's trigger
+
