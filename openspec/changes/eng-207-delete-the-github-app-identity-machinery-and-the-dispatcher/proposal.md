@@ -29,16 +29,22 @@ jen still ships a status-polling dispatcher (`jen run` / `jen watch`) that runs 
 
 None.
 
+### Removed Capabilities
+
+These five capabilities are retired completely. Each spec directory is deleted outright under `openspec/specs/`, and the change carries no delta for it. OpenSpec can't express removing a capability: archive refuses to write a spec with every requirement gone ("Spec must have at least one requirement"). This proposal is what records the removal.
+
+- `pipeline-identity`: the three roles, their credentials, the merge gate, and the delivering role's verdict credential.
+- `task-dispatch`: `jen run`'s tick.
+- `stage-execution`: the executor that turned a run request into a session.
+- `pipeline-runner`: `jen watch`.
+- `project-binding`: `setup-jen`.
+
 ### Modified Capabilities
 
-- `pipeline-identity`: every requirement removed. The capability described the three roles, their credentials, the merge gate and the delivering role's verdict credential.
-- `task-dispatch`: every requirement removed. This was `jen run`'s tick.
-- `stage-execution`: every requirement removed. This was the executor that turned a run request into a session.
-- `pipeline-runner`: every requirement removed. This was `jen watch`.
-- `project-binding`: every requirement removed. The capability described `setup-jen`.
-- `adoption-docs`: remove the requirements for the environment passthrough, autonomy and the runner, and the session-tool version. Modify the ownership-boundary and permissions requirements where they credit a runner or a dispatched run.
+- `adoption-docs`: remove the requirements for the environment passthrough, autonomy and the runner, and the session-tool version. Replace the adoption-path requirement, which made `setup-jen` a step on the path. Modify the ownership-boundary, executed-path and permissions requirements where they credit a runner, binding, or a dispatched run.
 - `stage-conventions`: modify the record requirement, which hands refusal to "the dispatcher". Modify the announcement requirement to drop its dispatcher scenario and the marker. Modify the pull-request requirement's scenario about the pipeline running as an application.
 - `task-pipeline`: modify the `Pending` and stage-trigger requirements, which say no dispatcher dispatches from `Pending` and that telling "not picked up" from "being worked" is the dispatcher's job. Modify the refinement requirement, which names "the dispatcher" as a reader of the labels.
+- `openspec-integration`: remove the dispatcher's obligation to make OpenSpec reachable inside the bare clones it launched sessions into.
 - `repo-scaffold`, `project-install`: modify the sentences that say a project's own permission entries are "in force in a dispatched run" and that `.claude/settings.json` is "what a dispatched run establishes trust for".
 
 ## Impact
