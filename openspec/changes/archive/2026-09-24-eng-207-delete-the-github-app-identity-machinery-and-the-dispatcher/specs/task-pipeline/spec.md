@@ -1,71 +1,4 @@
-# task-pipeline Specification
-
-## Purpose
-
-Defines the pipeline a task travels: the ordered stages, the transition that triggers each one, how a stage hands off, which transitions belong to the user rather than to any stage, what a stage does when there is nobody to confirm with, and how a task is routed backward when a stage finds the previous stage's output unusable.
-## Requirements
-### Requirement: Refinement precedes the pipeline and ends in `Todo`
-
-`refine-epic` SHALL turn an idea into an epic and its sub-issue tasks, and SHALL leave everything it produces in `Todo`. `Backlog` SHALL hold unrefined placeholders and `Todo` SHALL hold refined tasks ready to design.
-
-Refinement SHALL label what it produces: an epic SHALL carry the `epic` label and a task SHALL carry the `task` label. The labels SHALL be what identifies which of the two an issue is, so that a reader of the tracker alone can tell a task from its parent without inferring it from the issue's shape. Only an issue labelled `task` travels the pipeline; an epic sits in whatever status reflects its children and no stage runs against it.
-
-Promoting a task from `Todo` to `In Design` SHALL be the user's decision. No stage SHALL make that transition.
-
-#### Scenario: An idea is refined
-
-- **WHEN** `refine-epic` finishes breaking an epic down
-- **THEN** the epic and its tasks are in `Todo`
-- **AND** the epic carries the `epic` label and each task carries the `task` label
-- **AND** none of them has been moved into `In Design`
-
-#### Scenario: An epic's status reflects its children
-
-- **WHEN** an epic sits in a stage's status because tasks beneath it are being worked
-- **THEN** no stage runs against the epic itself
-
-#### Scenario: An idea is logged without being refined
-
-- **WHEN** an idea is captured that nobody has thought through
-- **THEN** it is created in `Backlog`
-
-#### Scenario: A refined task is picked up
-
-- **WHEN** a task in `Todo` is moved to `In Design`
-- **THEN** a human made that transition
-- **AND** every later transition is a stage's, apart from the promotion out of `Pending`, which is the user's as well
-
-### Requirement: Design confirms with the user when it can, and no stage waits on a reply
-
-`design-task` SHALL confirm with the user before each artifact when confirmation is available to it. When it is not — a run in which asking is denied or impossible — `design-task` SHALL write the artifact set without confirming rather than waiting, and the task's draft PR SHALL be the surface on which that confirmation happens afterward.
-
-`design-task` SHALL determine which of these applies from whether confirmation is actually available to it, and SHALL NOT depend on a flag, an environment variable, or a declared mode to tell it.
-
-No stage SHALL wait on a reply. A stage that needs a human SHALL write what is needed to the task or the PR, move the task to `Pending`, and stop.
-
-#### Scenario: Design runs with a user present
-
-- **WHEN** `design-task` is about to write an artifact and can ask
-- **THEN** it confirms with the user first
-
-#### Scenario: Design runs with nobody to ask
-
-- **WHEN** `design-task` is about to write an artifact and confirmation is unavailable
-- **THEN** it writes the artifact without confirming
-- **AND** the artifact reaches the user through the draft PR rather than through a question
-
-#### Scenario: A stage hits something only a human can decide
-
-- **WHEN** a stage cannot proceed without a human
-- **THEN** it records what is needed on the task or as a comment anchored to what it concerns
-- **AND** it moves the task to `Pending`
-- **AND** the run stops rather than waiting for an answer
-
-#### Scenario: A stage stops early
-
-- **WHEN** a stage stops before finishing its work
-- **THEN** the task is in `Pending` rather than in the stage's own status
-- **AND** the reason it stopped is readable on the task or the PR
+## MODIFIED Requirements
 
 ### Requirement: A stage may route a task backward
 
@@ -96,6 +29,37 @@ A stage SHALL NOT route a task backward for a reason the record shows it was alr
 - **WHEN** a stage routes a task back for something the record does not show it was routed back for before
 - **THEN** it routes it backward normally
 - **AND** the task is not parked on account of having been routed back previously
+
+### Requirement: Refinement precedes the pipeline and ends in `Todo`
+
+`refine-epic` SHALL turn an idea into an epic and its sub-issue tasks, and SHALL leave everything it produces in `Todo`. `Backlog` SHALL hold unrefined placeholders and `Todo` SHALL hold refined tasks ready to design.
+
+Refinement SHALL label what it produces: an epic SHALL carry the `epic` label and a task SHALL carry the `task` label. The labels SHALL be what identifies which of the two an issue is, so that a reader of the tracker alone can tell a task from its parent without inferring it from the issue's shape. Only an issue labelled `task` travels the pipeline; an epic sits in whatever status reflects its children and no stage runs against it.
+
+Promoting a task from `Todo` to `In Design` SHALL be the user's decision. No stage SHALL make that transition.
+
+#### Scenario: An idea is refined
+
+- **WHEN** `refine-epic` finishes breaking an epic down
+- **THEN** the epic and its tasks are in `Todo`
+- **AND** the epic carries the `epic` label and each task carries the `task` label
+- **AND** none of them has been moved into `In Design`
+
+#### Scenario: An epic's status reflects its children
+
+- **WHEN** an epic sits in a stage's status because tasks beneath it are being worked
+- **THEN** no stage runs against the epic itself
+
+#### Scenario: An idea is logged without being refined
+
+- **WHEN** an idea is captured that nobody has thought through
+- **THEN** it is created in `Backlog`
+
+#### Scenario: A refined task is picked up
+
+- **WHEN** a task in `Todo` is moved to `In Design`
+- **THEN** a human made that transition
+- **AND** every later transition is a stage's, apart from the promotion out of `Pending`, which is the user's as well
 
 ### Requirement: A stage either hands off or parks the task at `Pending`
 
@@ -129,32 +93,6 @@ A stage status SHALL therefore always mean that a session is working the task or
 - **WHEN** a task is observed sitting in a stage's status
 - **THEN** it means a session is working it or a session died working it
 - **AND** it never means the task is finished with that stage
-
-### Requirement: Design ends at `Pending` and promotion is the user's
-
-`design-task` SHALL NOT hand the task to implementation when it finishes. It SHALL move the task to `Pending`, having written its artifacts, opened the draft PR, and commented.
-
-Moving a task from `Pending` to `In Progress` SHALL be the user's decision, because that transition starts implementation and implementation is user-led. Together with `Todo` → `In Design`, this SHALL be one of two transitions no stage makes.
-
-Design SHALL NOT be an exception to how a stage ends. It parks the task at `Pending` for the same reason any stage does — a person is needed next — and its end-of-session comment is what says the artifacts are ready to read rather than that something is wrong.
-
-#### Scenario: Design finishes its artifacts
-
-- **WHEN** `design-task` completes the full artifact set and validates it
-- **THEN** it moves the task to `Pending`
-- **AND** its comment says the design is complete and awaiting promotion
-- **AND** no stage moves it to `In Progress`
-
-#### Scenario: A designed task is promoted
-
-- **WHEN** a task whose design is complete is moved from `Pending` to `In Progress`
-- **THEN** a human made that transition
-
-#### Scenario: A design run is interrupted
-
-- **WHEN** a design session is killed before finishing
-- **THEN** the task is left in `In Design`, which a finished design run would not have done
-- **AND** the absence of the move to `Pending` is what distinguishes the two
 
 ### Requirement: Each stage is one skill, triggered by the task's presence in its status
 
@@ -190,4 +128,3 @@ No stage SHALL require any trigger beyond that status, and the pipeline SHALL NO
 - **WHEN** a stage that hands off finishes
 - **THEN** it moves the task to the status of the stage it hands off to
 - **AND** that status is the next stage's trigger
-

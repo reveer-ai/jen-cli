@@ -58,9 +58,9 @@ describe('reconciliation candidates', () => {
   });
 
   // A member occupies a slot, so a file lying directly in the target directory is not one,
-  // whatever it is called and whatever it carries. jen keeps its own notes for the stage
-  // skills at `.claude/skills/AGENTS.md`, which puts a real file in that position, and an
-  // adopter may keep their own there for the same reason. Deletion is the stamp intersected
+  // whatever it is called and whatever it carries. The notes convention puts an `AGENTS.md`
+  // beside the code it describes, so a project keeping notes for its skills puts a real file
+  // at `.claude/skills/AGENTS.md`. Deletion is the stamp intersected
   // with the slot enumeration; the danger is a future reconciliation that reaches for the
   // stamp alone — walking the target directory for stamped files is the obvious shortcut,
   // and it would take this one, because the stamp is genuinely there.

@@ -3,9 +3,7 @@
 ## Purpose
 
 Fixes the rules every stage obeys and none of them owns — what a stage reads before it acts, how it resumes a run that was killed, how a task's branch and change are named, the single PR that carries it end to end, how a finalized artifact reaches the task, what belongs in a description versus a comment, commit format, thread etiquette, where a stage records what it learned, what it is permitted to run, and the comment every session ends with — so that they are stated once rather than six times.
-
 ## Requirements
-
 ### Requirement: A stage takes a task as its input
 
 Every stage SHALL act on one task, given directly or inferred from context. A stage that cannot determine which task it is acting on SHALL ask rather than guess.
@@ -21,7 +19,7 @@ Before doing its work, a stage SHALL read the task's record — its status histo
 
 That record is what tells a stage whether it is resuming an interrupted run, picking up work a later stage routed back and why, what a human has already said about it, and whether the task has been circling the pipeline.
 
-The record SHALL be context and SHALL NOT be a gate. A stage SHALL NOT decline to do its work on account of what it reads there; refusing to dispatch a task belongs to the dispatcher.
+The record SHALL be context and SHALL NOT be a gate. A stage SHALL NOT decline to do its work on account of what it reads there. Whether a task should be worked at all is decided by whoever starts the stage, not by the stage.
 
 #### Scenario: A stage begins work
 
@@ -90,7 +88,7 @@ The task's OpenSpec change name SHALL be that same string lowercased, with any l
 
 A stage SHALL act on the pull request through the git host's own client, and on the task through the project-management tracker. Reading the threads on a pull request, anchoring a comment to a line of the diff, replying to a thread, resolving it, recording a review verdict, and merging SHALL all be done against the git host. Status, comments, and artifact attachments SHALL be done against the tracker.
 
-A stage SHALL NOT act on a pull request through the tracker's tooling, even where that tooling exposes the capability. A tracker's view of a pull request is derived from an integration that binds a tracker user to a git-host account, so it is available only to identities that have one; an identity acting as an application has no such account, and its every read of that surface returns empty. The failure is silent — the tooling is offered to every identity regardless, and an empty result is indistinguishable from a pull request with nothing on it — so the division SHALL be held by instruction rather than discovered at runtime.
+A stage SHALL NOT act on a pull request through the tracker's tooling, even where that tooling exposes the capability. A tracker's view of a pull request is derived from an integration that binds a tracker user to a git-host account, so it is available only to identities that have one. An identity without a linked git-host account, such as one acting as an application, reads that surface as empty every time. The failure is silent — the tooling is offered to every identity regardless, and an empty result is indistinguishable from a pull request with nothing on it — so the division SHALL be held by instruction rather than discovered at runtime.
 
 The issue's suggested branch name is the one value that crosses: it is read from the tracker and used to name the branch, as required by the naming convention.
 
@@ -106,7 +104,7 @@ The issue's suggested branch name is the one value that crosses: it is read from
 
 #### Scenario: The pipeline runs under an identity that is not a person's
 
-- **WHEN** a stage acts on a pull request while running as an application rather than as a human user
+- **WHEN** a stage acts on a pull request under an identity that has no git-host account linked in the tracker
 - **THEN** its reads and writes reach the pull request, because they go to the git host
 
 #### Scenario: A capability is offered on both surfaces
@@ -270,15 +268,15 @@ The permissions a run is granted SHALL cover the commands and tools its stage's 
 tell it to use. A stage instructed to do something the harness denies cannot do its work, and
 an unattended run has no one to grant the permission when it is asked for.
 
-This SHALL be satisfied by how the session is started rather than by what was written into
-configuration before it started. A session decides each action on what the action is, so the
-commands a stage's instructions name are permitted without any of them having been listed
-anywhere. jen SHALL NOT grant the workflow's own tooling — version control, the git host, the
+This SHALL be satisfied by the permission mode the session is started in rather than by what was
+written into configuration before it started. In a mode that judges each action on what the
+action is — which an unattended invocation has to select for itself — the commands a stage's
+instructions name are permitted without any of them having been listed anywhere. jen SHALL NOT grant the workflow's own tooling — version control, the git host, the
 specification tooling — in the assistant configuration it writes, even though that tooling is
 the same across every project. Sameness was the argument for writing it down, and it does not
 survive the change of arrangement: an entry resolves *before* the per-action judgment is made,
-so granting the workflow's own calls is what exempts them from the judgment every other action
-gets. The pipeline's git-host calls include its approving review and its merge, which are the
+so granting the workflow's own calls is what exempts them from the judgment the mode applies to
+every other action. The pipeline's git-host calls include its approving review and its merge, which are the
 calls least worth exempting.
 
 Permissions that differ by install SHALL still be identified rather than assumed — the
@@ -328,11 +326,11 @@ Together with the announcement a stage opens with, this is what makes a session'
 - **AND** the task is still in the stage's own status
 - **AND** a stage re-entering the task reads that pairing as an interrupted run whose markers are unverified
 
-### Requirement: A stage announces itself on the task before it acts
+### Requirement: A stage announces itself on the task before it starts work
 
 A stage SHALL comment on the task before producing anything, saying which stage is running and that it has picked the task up. It SHALL do so on its own behalf, once its session is actually running, rather than anything writing the announcement in advance on its behalf.
 
-That announcement SHALL be what marks the task as being worked. The task's status SHALL NOT be read as evidence that nothing is working it, because the status stays actionable until the stage moves it.
+That announcement SHALL be what marks the task as being worked, to a person and to a stage alike. It SHALL be a plain comment. It SHALL carry no machine-readable marker, since nothing parses one. The task's status SHALL NOT be read as evidence that nothing is working it, because the status stays actionable until the stage moves it.
 
 A stage re-entering a task it finds already announced SHALL treat the announcement as a claim rather than as proof, exactly as it treats any other completion marker, and SHALL establish from the evidence what a previous run actually did.
 
@@ -341,14 +339,15 @@ A stage re-entering a task it finds already announced SHALL treat the announceme
 - **WHEN** a session starts against a task
 - **THEN** it comments that the stage has picked the task up before it produces anything
 
-#### Scenario: A dispatcher examines a task
+#### Scenario: A task is found already announced
 
 - **WHEN** a task in a stage's status carries an announcement from a session that has not reported an outcome
-- **THEN** the task is treated as being worked
-- **AND** nothing dispatches against it
+- **THEN** the task is treated as being worked, or as worked by a session that died
+- **AND** a second session is not started against it without first establishing which
 
 #### Scenario: A session dies before announcing itself
 
 - **WHEN** a session ends before it comments
 - **THEN** the task carries no evidence it was started
 - **AND** it is indistinguishable from a task nothing has run against
+

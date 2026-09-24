@@ -3,9 +3,7 @@
 ## Purpose
 
 Defines what `jen init` and `jen update` do to a project on disk — which files each writes, when a file is refreshed rather than left alone, when one is removed, and the boundaries both commands hold to so that adopting or upgrading the workflow can never destroy what the project itself authored.
-
 ## Requirements
-
 ### Requirement: `jen init` installs the payload into a project
 
 `jen init` SHALL write every managed file declared by the `managed-payload` capability into the target project: each fixed path at its declared location, and each variable-set member into the set's declared target directory, carrying the ownership stamp it was staged with.
@@ -59,9 +57,9 @@ The refusal SHALL be reported as an unsupported adoption rather than as a corrup
 
 ### Requirement: `jen init` writes a scaffold the project then owns
 
-`jen init` SHALL create `registry.yaml` and `.claude/settings.json` when they are absent. `registry.yaml` SHALL be written as a stub whose unfilled state is distinguishable from a registry a project has filled in, so that a later setup step can tell the two apart. `.claude/settings.json` SHALL be written as the seat a project's own assistant configuration takes, and SHALL NOT be seeded with permissions: no permission written there is one the workflow's stages depend on.
+`jen init` SHALL create `registry.yaml` and `.claude/settings.json` when they are absent. `registry.yaml` SHALL be written as a stub whose unfilled state is distinguishable from a registry a project has filled in. `.claude/settings.json` SHALL be written as the seat a project's own assistant configuration takes, and SHALL NOT be seeded with permissions: no permission written there is one the workflow's stages depend on.
 
-Creating it empty of grants SHALL be understood as the point rather than an omission. The file is what a dispatched run establishes trust for, so it has to exist on installation; what it must not do is arrive carrying a guess at the adopter's toolchain, or grants for the workflow's own tooling that would exempt the pipeline's calls from the judgment each action otherwise gets.
+Creating it empty of grants SHALL be understood as the point rather than an omission. The file is the project's seat for its own rules, read by any session the adopter's assistant runs in the project once that assistant treats the project as trusted, so it exists from installation; what it must not do is arrive carrying a guess at the adopter's toolchain, or grants for the workflow's own tooling that would exempt the pipeline's calls from the judgment the session's permission mode otherwise applies to each action.
 
 Both files SHALL be project-owned from the moment they exist. jen SHALL NOT overwrite, merge into, or delete either on any subsequent run, including `jen init` re-run and `jen update`. An install predating this arrangement therefore keeps the entries jen once wrote, and removing them SHALL be the adopter's to do rather than something an update performs.
 
@@ -220,3 +218,4 @@ Each command SHALL report what it did — which managed paths it wrote, which it
 - **WHEN** a command cannot complete
 - **THEN** it reports the reason
 - **AND** exits non-zero
+

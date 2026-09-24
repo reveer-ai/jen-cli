@@ -93,3 +93,28 @@ condition of its own supersession and the condition had arrived. `REMOVED` was t
 the half that was still true restated in the requirement replacing it. The test for which case
 you are in: read the scenario heading alone, as a claim. If it is now false, `MODIFIED` cannot
 express what you mean.
+
+## A capability is retired by deleting its spec directory, never by a delta
+
+OpenSpec has no operation for removing a capability. The obvious route, a delta that
+`REMOVED`s every requirement the spec has, passes `openspec validate --strict` and then fails
+at archive:
+
+```
+Validation errors in rebuilt spec for pipeline-identity … Spec must have at least one requirement.
+Aborted. No files were changed.
+```
+
+Archive rebuilds each named spec by applying its delta, then validates the result, and a spec
+with no requirements is invalid. Deleting the spec directory first doesn't help as long as the
+delta is still there, because archive then reads the delta as creating a new spec, which is
+also empty. The only route that archives is **no delta for the capability at all**, with its
+directory under `openspec/specs/` deleted as an ordinary file removal in the change's diff. The
+proposal's list of removed capabilities is then the only record of what went and why, so say it
+there.
+
+Why it's worth a note: `--strict` is the check every stage runs, and it passes. The abort first
+shows up in `deliver-task`, after review and testing have already signed off. ENG-207 found it
+by running archive against a scratch copy of `openspec/` during design. Do the same (`cp -R
+openspec` somewhere disposable, then `openspec archive <change> --yes` there) for any change that
+retires a capability.

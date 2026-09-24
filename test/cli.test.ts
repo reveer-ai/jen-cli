@@ -14,16 +14,12 @@ import { readRepoFile, repoRoot } from './helpers.js';
 const entry = join(repoRoot, 'dist/index.js');
 
 /** Runs the built CLI with standard input closed — nothing here may wait on a person. */
-function jen(
-  args: string[],
-  env: Record<string, string> = {},
-): { status: number | null; stdout: string; stderr: string } {
+function jen(args: string[]): { status: number | null; stdout: string; stderr: string } {
   const result = spawnSync(process.execPath, [entry, ...args], {
     cwd: repoRoot,
     encoding: 'utf8',
     stdio: ['ignore', 'pipe', 'pipe'],
     timeout: 60_000,
-    env: { ...process.env, ...env },
   });
   return { status: result.status, stdout: result.stdout, stderr: result.stderr };
 }
@@ -33,26 +29,11 @@ describe('the built binary', () => {
     const result = jen(['--help']);
 
     expect(result.status).toBe(0);
-    for (const command of ['init', 'update', 'run', 'watch']) {
+    for (const command of ['init', 'update']) {
       expect(result.stdout).toMatch(new RegExp(`^ {2}${command} {2,}\\S`, 'm'));
     }
     expect(result.stdout).not.toContain('not implemented');
     expect(result.stdout).not.toContain('payload declaration');
-  });
-
-  // The loop is a real process an operator starts and stops, so the one thing worth
-  // spawning for is that it starts at all — with standard input closed, like everything
-  // else here, and refusing rather than idling when it has nothing to poll.
-  it('refuses to start the runner against a project it cannot resolve', () => {
-    const root = project({}, 'spawned-watch');
-    // Every credential blanked deliberately. This spawns a real process, and a contributor
-    // with a working key exported would otherwise have this test start a live pipeline
-    // against a real tracker and sit in its loop until the timeout.
-    const result = jen(['watch', root], { LINEAR_API_KEY: '', JEN_TEAM: '', JEN_PROJECT: '' });
-
-    expect(result.status).toBe(1);
-    expect(result.stderr).toContain('LINEAR_API_KEY is not set');
-    expect(result.stderr).toContain('the loop was not started');
   });
 
   it('prints the installed version', () => {

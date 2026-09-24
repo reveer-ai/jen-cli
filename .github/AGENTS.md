@@ -117,36 +117,3 @@ There are three kill switches outside this repository, none needing a commit: re
 trusted publisher entry, uninstall the App, or remove `main` from the `release`
 environment's deployment branches. They sever different links — publishing, Version PRs,
 and the credential itself.
-
-## Running a stage from a workflow
-
-No workflow here runs a stage, and jen ships none that does. The two in this directory are
-jen's own CI and release. jen used to ship a scheduled runner to adopters at
-`.github/workflows/jen.yml`; that was removed in ENG-188, and jen now ships no workflow file
-for any runner — `jen run` is the entry point, and an adopter who drives it from a scheduled
-job owns the file that does so.
-
-The rules below therefore describe a workflow an adopter might write, not one in this
-repository. They are kept because the pipeline's own stages hit the same two rules however
-they are dispatched.
-
-Both of the rules below fail silently when they are got wrong, which is why they were written
-down before the code that could trip on them existed.
-
-**The review verdict must never be submitted under `GITHUB_TOKEN`.** A review submitted
-with the default workflow credential is recorded and rendered exactly like any other, and
-satisfies no approval requirement — so the pull request shows a review, the gate stays
-unsatisfied, and delivery blocks on an approval that appears to already be there. It is the
-worst shape a failure can take: not an error, a lie. The verdict goes out under the
-`deliver` role's own installation token, minted from its App's private key.
-
-**`GH_TOKEN`, not `GITHUB_TOKEN`, is the name a stage's credential is supplied under.** This
-is not a style preference. `gh` prefers `GH_TOKEN` when both are set, and on an Actions
-runner `GITHUB_TOKEN` is present whether or not anyone put it there — it is the very
-credential above, sitting in the variable a stage would otherwise read. Naming the good
-credential so that it *wins* is what keeps the default from silently taking over. If you
-find a stage reading `GITHUB_TOKEN`, that is the bug, not the fallback.
-
-Which surface a stage reaches for its pull-request work is not a workflow question — see
-`.claude/skills/AGENTS.md` for why the tracker's diff tools are inert under the pipeline's
-own identity, and why that is invisible from their output.

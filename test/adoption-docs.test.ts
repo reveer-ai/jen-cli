@@ -3,16 +3,11 @@
  * prose.
  *
  * Every one of these is a thing an adopter finds out the hard way when the documentation
- * does not say it: an edit lost to the next update, a pipeline they cannot work out how to
- * stop, a runner they started believing it took the git host out of the picture, or a
- * session that hangs the loop with no timeout behind it. Nothing at runtime reports any of
- * them.
+ * does not say it: an edit lost to the next update, or a rule they never wrote because they
+ * believed the file it goes in was jen's. Nothing at runtime reports either.
  */
 import { describe, expect, it } from 'vitest';
 
-import { NAMESPACE, VARIABLES } from '../cli/github.js';
-import { PAUSED_STATUS_NAME } from '../cli/linear.js';
-import { STAGES } from '../cli/stages.js';
 import { readRepoFile } from './helpers.js';
 
 const readme = readRepoFile('README.md');
@@ -27,28 +22,6 @@ function at(text: string): number {
 describe('the ownership boundary', () => {
   it('is stated before the installation command', () => {
     expect(at('## What jen owns, and what you own')).toBeLessThan(at('npx jen init'));
-  });
-
-  // Where the pipeline's tracker project is set. It used to be resolved into a managed file
-  // as jen wrote it, so the boundary had to warn against editing that file; now the runner
-  // reads the registry directly, and what the boundary owes an adopter is where to change it.
-  it('names the registry as where the pipeline\'s project is set, and says who reads it', () => {
-    const boundary = readme.slice(0, at('## Adopting jen'));
-
-    expect(boundary).toMatch(/Change which project the pipeline polls in `registry\.yaml`/);
-    expect(boundary).toMatch(/The runner reads it from the checkout/);
-  });
-
-  // The table says who reads the registry before the paragraph below it does, and it used to
-  // credit "the workflow below" — the workflow row this change deletes. Both halves of that
-  // were wrong once jen shipped no workflow: the reference dangled, and it attributed the read
-  // to something that no longer exists. The row has to name the same reader the paragraph does.
-  it('credits the runner, not a workflow, with reading the registry', () => {
-    const boundary = readme.slice(0, at('## Adopting jen'));
-    const row = boundary.split('\n').find((line) => line.startsWith('| `registry.yaml`'));
-
-    expect(row).toMatch(/where the runner gets your tracker project from/);
-    expect(row).not.toMatch(/workflow/);
   });
 
   // jen claimed exactly one path outside `.claude/` and the root — the scheduled workflow —
@@ -75,11 +48,23 @@ describe('the ownership boundary', () => {
  * believes jen owns it will not put a rule there.
  */
 describe('the permissions chapter', () => {
-  const chapter = readme.slice(at('### 4. Permissions'), at('### 5. Give the stages'));
+  const chapter = readme.slice(at('### 4. Permissions'), at('### 5. Take a later version'));
 
   it('says an action is judged on what it is, and that ordinary work needs no entry', () => {
     expect(chapter).toMatch(/judges each action on what the action is/);
     expect(chapter).toMatch(/needs no entry anywhere/);
+  });
+
+  /**
+   * The judgment used to arrive with the executor, which launched every session in auto mode and
+   * handed it the tracker's MCP configuration. jen launches nothing now, so both depend on how the
+   * stage is invoked — and a chapter that states them as facts promises what nothing supplies.
+   */
+  it('makes the judgment the invoker\u2019s mode, and the tracker tools the adopter\u2019s own', () => {
+    expect(chapter).toMatch(/judgment belongs to the mode, not to jen/);
+    expect(chapter).toMatch(/unattended invocation .* has to select the judging mode itself/);
+    expect(chapter).toMatch(/tracker's own tools come from your assistant's own MCP configuration/);
+    expect(chapter, 'nothing grants them where a stage is invoked any more').not.toMatch(/granted where a stage is invoked/);
   });
 
   /**
@@ -97,9 +82,9 @@ describe('the permissions chapter', () => {
   // The file survives the emptying, and an adopter who reads it as jen's will never put a rule
   // in it. The example beside it is the thing most likely to be pasted over a file that already
   // has contents, which is why it is shown as entries rather than as a document.
-  it('says the file is the project\u2019s, in force in a dispatched run, and shows entries not a file', () => {
+  it('says the file is the project\u2019s, in force in a stage\u2019s session, and shows entries not a file', () => {
     expect(chapter).toMatch(/`\.claude\/settings\.json` is still yours/);
-    expect(chapter).toMatch(/in force in a dispatched run/);
+    expect(chapter).toMatch(/in force in a stage's session/);
     expect(chapter).toMatch(/[Ee]ntries you add, not a file to paste over/);
     expect(chapter, 'a whole-file example is what gets pasted over a file that already has one').not.toContain('"permissions"');
   });
@@ -128,220 +113,16 @@ describe('the permissions chapter', () => {
   });
 });
 
-/**
- * What a session receives, which the adopter is the only one who can supply.
- *
- * The failure this documentation prevents is quiet in both directions: a suite that cannot
- * reach its database because nobody said the runner's environment was where it comes from,
- * and a secret written into a declaration that was only ever meant to hold names.
- */
-describe('the environment chapter', () => {
-  const chapter = readme.slice(at('### 5. Give the stages'), at('### 6. Take a later version'));
-
-  // Beside the permissions section deliberately: the two answer neighbouring halves of one
-  // question. That one says a project's own commands run without being named in advance, and
-  // this says how those same commands are given what they read.
-  it('sits with the permissions guidance, and says what reaches a session', () => {
-    expect(at('### 4. Permissions')).toBeLessThan(at('### 5. Give the stages'));
-    expect(chapter).toMatch(/set on the runner reaches every stage|reaches every stage's session/);
+describe('the adoption path', () => {
+  // Nothing performs this step, so a path that reads as if `init` had done it leaves an
+  // adopter with a workflow pointing at nothing and no signal that it is.
+  it('says the registry is filled in by hand', () => {
+    const step = readme.slice(at('### 3. Fill in `registry.yaml`'), at('### 4. Permissions'));
+    expect(step).toMatch(/`jen init` leaves the workflow pointing at nothing/);
+    expect(step).toMatch(/by hand/);
   });
 
-  /**
-   * The passthrough is available on the runner jen ships, which is the only one it ships, so
-   * the section carries no caveat naming a runner it is unavailable on. It used to: the
-   * scheduled workflow was handed a closed list of names from a managed file and could not be
-   * given another. A caveat that survived that runner would describe nothing, and an adopter
-   * reading it would go looking for a restriction that no longer exists.
-   */
-  it('states the passthrough without qualifying which runner it is available on', () => {
-    expect(chapter).not.toMatch(/the local runner's today/);
-    expect(chapter).not.toMatch(/cannot carry your variables/);
-    expect(chapter).not.toContain('.github/workflows/jen.yml');
-  });
-
-  // An adopter who reads the passthrough as unconditional has been told the runner's role
-  // keys are handed to every session, which is the opposite of what happens.
-  it('names the namespace withheld from sessions, and that the credentials are in it', () => {
-    expect(chapter).toContain(NAMESPACE);
-    expect(chapter).toMatch(/never reaches a session/);
-    expect(chapter).toMatch(/role credentials are inside it|credentials.{0,60}inside it/is);
-  });
-
-  it('gives the declaration that narrows a variable, under the name jen reads', () => {
-    expect(chapter).toContain(VARIABLES.stageScope('test-task'));
-    for (const stage of STAGES) expect(chapter, `${stage.skill} is never named`).toContain(VARIABLES.stageScope(stage.skill));
-  });
-
-  /**
-   * The trap this assertion exists for, and the reason it counts.
-   *
-   * `JEN_ENV_TEST_TASK=STAGING_SSH_KEY` is indistinguishable at a glance from a variable
-   * holding a key, so an example with one name in it teaches an adopter to paste their secret
-   * into the declaration. Two names is what makes a list read as a list.
-   */
-  it('says the declaration holds names, and shows more than one of them', () => {
-    expect(chapter).toMatch(/list of variable \*names\*, not values|names, not values/);
-
-    const example = /JEN_ENV_TEST_TASK=(\S+)/.exec(chapter);
-    expect(example, 'the chapter shows no declaration').not.toBeNull();
-    expect(example![1]!.split(',').length, 'the example names one variable, which reads as a value').toBeGreaterThan(1);
-  });
-
-  // An adopter reasoning from the roles expects testing's variable to be kept from delivery
-  // because of the identities. It is not — they are one identity — and only the declaration
-  // arranges it.
-  it('says the narrowing keys on the stage, and that three stages share one role', () => {
-    expect(chapter).toMatch(/by stage, not by role|keys on the stage/);
-    expect(chapter).toMatch(/Reviewing, testing, and delivering all act under the one `deliver` role/);
-  });
-
-  it('says a declaration that scoped nothing is reported rather than fatal', () => {
-    expect(chapter).toMatch(/reported in the run's output and does not fail it/);
-  });
-});
-
-describe('the runner chapter', () => {
-  const chapter = readme.slice(at('## Running the pipeline'), at('## Which assistants this reaches'));
-
-  it('presents one runner jen ships, and names it without the local qualifier', () => {
-    expect(chapter).toContain('jen watch');
-    expect(chapter).toMatch(/jen ships one runner/);
-    expect(chapter, 'in this documentation *local* meant "not the git host"').not.toMatch(/local runner/i);
-  });
-
-  // An adopter running the pipeline from their own machine will assume the git host went
-  // with it, and nothing about starting a process on their own hardware tells them otherwise.
-  it('says the runner does not remove the git host', () => {
-    expect(chapter).toMatch(/does not remove the git host from it/);
-    expect(chapter).toMatch(/merge gate/);
-  });
-
-  /**
-   * A runner jen does not ship is the answer for anyone who wants their git host's scheduler,
-   * and the reason jen stopped shipping one is the part that cannot be left out: a paste-ready
-   * workflow carries jen's apparent endorsement back into the cost this removal exists to end.
-   * So the chapter must say a scheduled git-host job is a valid runner, say why jen ships none,
-   * and supply no file — which is what the last assertion holds, since a fenced YAML block with
-   * a cron in it is what "supplying one" would look like.
-   */
-  it('says a runner jen does not ship is valid, why jen ships none, and supplies no example', () => {
-    expect(chapter).toMatch(/scheduled job on your git host/);
-    expect(chapter).toMatch(/holds a paid runner for the entire life of every stage session/);
-
-    expect(chapter, 'a workflow file would be a recipe jen decided not to publish').not.toMatch(/on:\s*\n\s*schedule:/);
-    expect(chapter).not.toMatch(/cron:/);
-    expect(chapter).not.toMatch(/runs-on:/);
-  });
-
-  // The runner has no liveness bound, and the two ways that reaches an adopter are a session
-  // that dies with the process and one that never finishes at all. Neither is visible from
-  // starting it, and the second has nothing at runtime that would ever report it.
-  it('names the conditions the runner carries', () => {
-    expect(chapter).toMatch(/dies with the process that launched it/i);
-    expect(chapter).toMatch(/a session is still working this/);
-    expect(chapter).toMatch(/hung session hangs the loop/i);
-  });
-
-  /**
-   * The one prerequisite whose failure does not present as itself.
-   *
-   * `--permission-prompts` is rejected as an unknown option below 2.1.259, and an unknown
-   * option is refused before the session starts — no session, no transcript, and a run that
-   * reports a stage which was dispatched and did nothing. An adopter reading that has no
-   * reason to look at their CLI version, so the documentation has to have said it first.
-   */
-  it('states the assistant CLI version the pipeline requires, and what being below it looks like', () => {
-    expect(chapter).toMatch(/Claude Code 2\.1\.259 or later/);
-    expect(chapter).toMatch(/refused before the session starts/);
-    expect(chapter).toMatch(/dispatched and did nothing/);
-  });
-
-  it('names every credential a runner needs, under the name the runner reads', () => {
-    const roles = [...new Set(STAGES.map((stage) => stage.role))];
-    const needed = [
-      VARIABLES.tracker,
-      ...VARIABLES.model,
-      ...roles.flatMap((role) => [VARIABLES.appId(role), VARIABLES.installation(role), VARIABLES.privateKey(role)]),
-    ];
-
-    for (const name of needed) expect(chapter, `${name} is never named`).toContain(name);
-    expect(chapter).toContain('Eleven values');
-  });
-
-  // The name alone is not the answer to "how do I get one": an adopter who has never minted
-  // a token has no reason to know the command exists, and the assertion above only holds the
-  // spelling.
-  it('names the subscription token as an accepted form, and how it is obtained', () => {
-    expect(chapter).toContain('CLAUDE_CODE_OAUTH_TOKEN');
-    expect(chapter).toContain('claude setup-token');
-    expect(chapter, 'that the command needs a subscription').toMatch(/requires a Claude subscription/);
-  });
-
-  /**
-   * The cost of the subscription form, and the one claim about it that must stay negative.
-   *
-   * The shared window is what an adopter meets as a stage dying mid-run rather than as a bill,
-   * so it has to be read before the choice rather than after it. The `SHALL NOT` is the part
-   * most worth pinning: an earlier draft of this change had the asymmetry backwards and called
-   * the token the less scoped credential, and an edit reintroducing that would weigh an
-   * adopter's choice against a risk the credential does not carry.
-   */
-  it('states what the subscription costs, and does not overstate what the token carries', () => {
-    expect(chapter, 'limits shared with the adopter\'s own work').toMatch(/usage limits are shared with your own interactive use/);
-    expect(chapter, 'bound to the person who minted it').toMatch(/belongs to the person who minted it/);
-    expect(chapter, 'the key is bound to no one person').toMatch(/issued independently of any one person/);
-
-    expect(chapter, 'the authority it actually carries').toMatch(/inference-only/);
-    expect(chapter, 'the token is never described as the broader credential').not.toMatch(/unscoped|unrestricted|full account access/i);
-  });
-
-  // A refusal an adopter meets with no warning reads as jen being broken, and the API key is
-  // the way out of it — which is only useful said in advance, since the refusal comes from
-  // their installation rather than from anything jen runs.
-  it('names that a managed policy can refuse to mint the token, and what is left open', () => {
-    expect(chapter).toMatch(/managed.{0,80}policy may forbid minting one/s);
-    expect(chapter, 'read as a stated limit rather than a malfunction').toMatch(/stated limit on your installation rather than a malfunction/);
-    expect(chapter, 'the other form stays available').toMatch(/`ANTHROPIC_API_KEY` is still open to you/);
-  });
-
-  // An adopter holding both is the ordinary state of a developer's machine, so what happens
-  // then is a thing they read rather than discover. Refusing is the load-bearing half: a
-  // reader who assumes a precedence assumes jen picked the one they meant.
-  it('says holding both is refused rather than resolved by a precedence', () => {
-    expect(chapter).toMatch(/A runner holds exactly one of them/);
-    expect(chapter, 'the run refuses before it spends either').toMatch(/Set both and every run refuses before it starts a session/);
-    expect(chapter, 'and does not choose').toMatch(/jen will not pick one for you/);
-  });
-
-  it('says what the pipeline does unsupervised, and what a human still owns', () => {
-    expect(chapter).toContain('`Todo` → `In Design`');
-    expect(chapter).toContain('`Pending` → `In Progress`');
-    expect(chapter).toMatch(/parks anything only a person can settle/);
-    expect(chapter).toContain('--concurrency');
-  });
-
-  it('documents the halt as the tracker\'s project status, under any runner', () => {
-    const stopping = chapter.slice(chapter.indexOf('### Stopping it'));
-
-    expect(stopping).toContain(PAUSED_STATUS_NAME);
-    expect(stopping).toMatch(/halt under any runner, including one jen does not ship/);
-    expect(stopping).toMatch(/no process to stop, no task's status to edit/);
-  });
-
-  // The status is one the adopter creates, so naming it is not enough on its own — an
-  // adopter who cannot find it in Linear has no halt, and nothing else about the pipeline
-  // looks any different. The rename is the same class of silence, one step later.
-  //
-  // That binding cannot check it belongs in the same test: an adopter who reads
-  // `setup-jen`'s report as a verification believes the halt was confirmed when nothing
-  // confirmed it. Nothing in the pipeline verifies this status, so the sentence saying so
-  // is what stands in place of the check.
-  it('says where to create the pause status, and what renaming it costs', () => {
-    const stopping = chapter.slice(chapter.indexOf('### Stopping it'));
-
-    expect(stopping, 'the category it goes under').toMatch(/In Progress.{0,40}categor|categor.{0,40}In Progress/s);
-    expect(stopping, 'where in Linear').toMatch(/workspace settings/i);
-    expect(stopping, 'renaming it turns the halt off').toMatch(/rename.{0,80}(halt|silent)/is);
-    expect(stopping, 'binding reports it rather than verifying it').toMatch(/cannot check|could not check/i);
+  it('names the command that takes a later version', () => {
+    expect(readme.slice(at('### 5. Take a later version'))).toContain('npx jen update');
   });
 });

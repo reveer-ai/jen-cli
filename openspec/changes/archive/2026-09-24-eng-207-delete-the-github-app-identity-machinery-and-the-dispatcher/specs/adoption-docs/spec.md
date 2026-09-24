@@ -1,25 +1,4 @@
-# adoption-docs Specification
-
-## Purpose
-
-Defines what the project's documentation must tell someone adopting jen — where the boundary between jen's files and theirs falls, how to get from an empty project to one running the workflow, and what the workflow does not yet do — and requires that the path described has been executed rather than only written.
-## Requirements
-### Requirement: The published front page addresses the adopter
-
-The repository's `README.md` SHALL document adopting and operating jen. It SHALL NOT be a contributor guide.
-
-The registry publishes `README.md` as the package's front page irrespective of which paths the manifest's `files` field selects, so this file is an adopter's first contact with the project whether or not it was written for them.
-
-#### Scenario: The package page documents adoption
-
-- **WHEN** the published package's front page is read
-- **THEN** it describes installing jen and running the workflow
-- **AND** it does not lead with instructions for building or packaging jen itself
-
-#### Scenario: Documentation reaches the registry without being selected
-
-- **WHEN** the published tarball is inspected
-- **THEN** `README.md` is present, though `files` names only the build output
+## MODIFIED Requirements
 
 ### Requirement: The documented path has been executed
 
@@ -39,45 +18,6 @@ Documentation that has not been executed SHALL NOT be treated as satisfying this
 
 - **WHEN** the adoption path is validated
 - **THEN** jen is installed from a tarball or the registry rather than executed from a working tree
-
-### Requirement: Contributor material lives outside the adopter's document
-
-Material addressed to someone changing jen — building, packaging, testing, and the repository's own layout — SHALL live in a document separate from the adopter's, and the adopter's document SHALL link to it rather than carry it.
-
-This SHALL NOT displace the notes convention: a gotcha about a particular part of the code belongs in the `AGENTS.md` nearest it, and the contributor document SHALL NOT restate those notes.
-
-#### Scenario: Build instructions are not on the package page
-
-- **WHEN** the adopter's documentation is read
-- **THEN** it does not carry the build, typecheck, packaging, or staging instructions
-- **AND** it links to the document that does
-
-#### Scenario: A contributor finds the checks
-
-- **WHEN** someone intending to change jen reads the contributor document
-- **THEN** it names the commands CI runs on every pull request
-
-### Requirement: Documentation states which assistants the payload reaches
-
-The documentation SHALL state that jen writes into `.claude/` only, and that support for another assistant is a symlink the project creates from that assistant's directory to the corresponding `.claude/` path — something jen neither creates nor reads.
-
-#### Scenario: An adopter on another assistant learns where they stand
-
-- **WHEN** an adopter using an assistant other than Claude Code reads the documentation
-- **THEN** it states that jen writes `.claude/` only
-- **AND** it names the symlink as the project's own step
-
-### Requirement: The documentation states what adoption does not yet cover
-
-The documentation SHALL state that jen does not migrate a project that already holds a conflicting managed file, that `jen init` refuses such a project rather than merging into it, and what the option to override that refusal does.
-
-An adopter meeting the refusal SHALL be able to recognize it from the documentation as a stated limit rather than as a malfunction.
-
-#### Scenario: A project holding its own root instructions is warned
-
-- **WHEN** an adopter whose project already carries a root `AGENTS.md` reads the documentation
-- **THEN** it states that initialization will refuse the project and that no file will be written
-- **AND** it states what overriding the refusal replaces
 
 ### Requirement: The documentation states the permissions the pipeline needs granted
 
@@ -144,6 +84,30 @@ Because the assistant configuration is written once at installation and owned by
 - **THEN** the documentation tells the adopter that the entries jen once wrote are theirs to remove or keep
 - **AND** does not suggest that an update will change that file for them
 
+## REMOVED Requirements
+
+### Requirement: The ownership boundary is stated before the instructions
+**Reason**: One of its scenarios says the runner reads the registry when it starts, and there is no runner any more. Scenarios can't be removed from a requirement in place, so it is replaced by *The ownership boundary is stated ahead of the installation steps*.
+**Migration**: None needed. The replacement carries every other part of it unchanged.
+
+### Requirement: The adoption path is documented end to end
+**Reason**: It made running the binding skill (`setup-jen`) a step on the path, and that skill is removed. It is replaced by *The adoption path is documented from installation to update*.
+**Migration**: The adopter fills in `registry.yaml` by hand.
+
+### Requirement: The documentation states what the environment set on the runner reaches
+**Reason**: The environment passthrough and its per-stage narrowing belonged to the executor `jen run` launched sessions through. That executor is removed, so there is no runner whose environment reaches a session.
+**Migration**: None. Stages run in whatever session a person invokes them from.
+
+### Requirement: The documentation says how autonomy is turned on, what it does once it is, and what drives it
+**Reason**: jen no longer ships a way to make the pipeline act on its own. `jen run`, `jen watch`, the runner's credentials and the project-status halt are all removed. Autonomy on managed projects is ENG-206's chief agent.
+**Migration**: None. Stages run in whatever session a person invokes them from.
+
+### Requirement: The documentation states the session-tool version the pipeline requires
+**Reason**: The minimum CLI version existed because of an option the executor passed when it launched a session. Nothing in jen launches a session any more.
+**Migration**: None. Stages run in whatever session a person invokes them from.
+
+## ADDED Requirements
+
 ### Requirement: The ownership boundary is stated ahead of the installation steps
 
 The adopter's documentation SHALL state which files jen owns and overwrites and which the project owns, and SHALL state it ahead of the installation steps.
@@ -193,4 +157,3 @@ Each step SHALL be given as the command an adopter runs, or as the edit they mak
 
 - **WHEN** an adopter on an earlier version wants the current one
 - **THEN** the documentation names the command that refreshes the managed files and removes those jen no longer ships
-

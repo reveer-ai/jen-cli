@@ -2,8 +2,7 @@
 # project-management entry that tracks it, and anything else a stage needs to reach.
 #
 # `jen init` writes this file once, and the project owns it from then on — jen never
-# reads, rewrites, or deletes it afterward. Run the `setup-jen` skill to fill it in, or
-# edit it by hand.
+# reads, rewrites, or deletes it afterward. Fill it in by hand.
 #
 # Each entry names the resource, says what kind of thing it is, and carries whatever a
 # stage needs to reach it. The project itself is one of them — jen installed into this
@@ -23,34 +22,7 @@
 #       project: Acme Web
 #       tracks: acme-web
 #
-# The pipeline acts under registered identities rather than under a person: one application
-# per role on the git host — `design`, `dev`, and `deliver` — and one agent shared by all
-# three on the tracker. `setup-jen` guides you through registering them and records them
-# here.
-#
-# An identity entry *names* an identity. It never authenticates one. No private key, client
-# secret, token, or password belongs in this file or in any other tracked file — a run reads
-# its credentials from its environment, and the two never meet on disk.
-#
-#     - name: acme-web-design
-#       kind: identity
-#       surface: git-host
-#       provider: github
-#       role: design
-#       app: acme-web-design
-#       app_id: 1234567
-#       installation: 89012345
-#       installed_on: acme-web
-#
-#     - name: acme-web-agent
-#       kind: identity
-#       surface: tracker
-#       provider: linear
-#       agent: jen
-#       agent_id: 00000000-0000-0000-0000-000000000000
-#
-# `role` appears on git-host identities only. The tracker identity carries none, because one
-# agent serves every role — which is why it is recorded once, belonging to the project rather
-# than to any one of them.
+# An entry *names* a resource. It never authenticates one. No private key, client secret,
+# token, or password belongs in this file or in any other tracked file.
 
 resources: []

@@ -33,22 +33,19 @@ describe('the payload declaration', () => {
       'review-task',
       'test-task',
       'deliver-task',
-      'setup-jen',
     ]);
     expect(skills!.members).toHaveLength(SKILLS.length);
   });
 
-  // The set is the skills jen ships, not the pipeline's stages. `setup-jen` is triggered
-  // by no status and appears in no stage table, and is a member on exactly the terms the
-  // other six are — a payload addition needs no migration, so the next `jen update`
-  // writes it into an already-adopted project.
+  // The set is the skills jen ships, not the pipeline's stages. `refine-epic` is triggered
+  // by no status, and is a member on exactly the terms the other five are.
   it('holds a shipped skill that no pipeline status triggers', () => {
-    expect(SKILLS).toContain('setup-jen');
-    expect(payloadFiles().find((entry) => entry.file.target.includes('setup-jen'))).toEqual({
+    expect(SKILLS).toContain('refine-epic');
+    expect(payloadFiles().find((entry) => entry.file.target.includes('refine-epic'))).toEqual({
       file: {
-        source: '.claude/skills/setup-jen/SKILL.md',
-        staged: 'skills/setup-jen/SKILL.md',
-        target: '.claude/skills/setup-jen/SKILL.md',
+        source: '.claude/skills/refine-epic/SKILL.md',
+        staged: 'skills/refine-epic/SKILL.md',
+        target: '.claude/skills/refine-epic/SKILL.md',
         format: 'markdown',
       },
       stamped: true,
@@ -202,12 +199,12 @@ describe('the scaffold declaration', () => {
     }
   });
 
-  // There is no shared floor to assert. A session decides each action on what the action is,
-  // so no stage depends on an entry here — and an entry is not a redundant grant but a bypass,
-  // matching before the judgment is made. The two calls it would exempt, `gh pr review
+  // There is no shared floor to assert. The session's permission mode judges each action on
+  // what the action is, so no stage depends on an entry here — and an entry is not a redundant
+  // grant but a bypass, matching before the judgment is made. The two calls it would exempt, `gh pr review
   // --approve` and `gh pr merge`, are the two in the pipeline where an independent check is
   // worth most. The array stays so the file keeps its shape: it is the seat a project's own
-  // rules take, and what the run establishes trust for.
+  // rules take, read once the assistant treats the project as trusted.
   it('grants nothing on a project’s behalf', () => {
     const settings = SCAFFOLD.find((file) => file.target === '.claude/settings.json');
     expect(settings, 'the scaffold must still carry assistant settings for a project to fill').toBeDefined();
