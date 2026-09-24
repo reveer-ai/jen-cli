@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Defines what the project's documentation must tell someone adopting jen — where the boundary between jen's files and theirs falls, how to get from an empty project to a running pipeline, and what the workflow does not yet do — and requires that the path described has been executed rather than only written.
+Defines what the project's documentation must tell someone adopting jen — where the boundary between jen's files and theirs falls, how to get from an empty project to one running the workflow, and what the workflow does not yet do — and requires that the path described has been executed rather than only written.
 
 ## Requirements
 

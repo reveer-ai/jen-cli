@@ -63,8 +63,8 @@ mkdir /tmp/proj && cd /tmp/proj && git init && npm init -y && npm i -D /tmp/reve
 
 Work through the rest as an adopter does:
 
-1. **Check what landed** — root `AGENTS.md`, the seven skills under `.claude/skills/` each carrying the stamp, `registry.yaml`, `.claude/settings.json`, and OpenSpec's own skills written beside jen's.
-2. **Bind it** — run the `setup-jen` skill. Point it at a team that already carries the pipeline's statuses and labels, so every check reports already-satisfied and the run creates nothing on the tracker. A fresh team would exercise label *creation*, which is a mutation on a real tracker to validate documentation.
+1. **Check what landed** — root `AGENTS.md`, the six skills under `.claude/skills/` each carrying the stamp, `registry.yaml`, `.claude/settings.json`, and OpenSpec's own skills written beside jen's.
+2. **Fill in the registry** — record a repository and a tracker project in `registry.yaml` by hand, as the README's third step tells an adopter to.
 3. **Read the scaffold as an adopter receives it** — `registry.yaml` and root `AGENTS.md`. Nothing in this repository reads `scaffold/`, so this is the only place its text is ever checked against the model it is supposed to teach.
 4. **Test the boundary** — edit one of the installed skills, run `npx jen update`, and confirm the edit is gone. Test it unstamped too: a file still in the payload is rewritten and re-stamped either way, and the README has to keep saying so.
 
