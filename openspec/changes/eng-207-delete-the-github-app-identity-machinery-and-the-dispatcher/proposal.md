@@ -43,8 +43,9 @@ These five capabilities are retired completely. Each spec directory is deleted o
 
 - `adoption-docs`: remove the requirements for the environment passthrough, autonomy and the runner, and the session-tool version. Replace the adoption-path requirement, which made `setup-jen` a step on the path. Modify the ownership-boundary, executed-path and permissions requirements where they credit a runner, binding, or a dispatched run.
 - `stage-conventions`: modify the record requirement, which hands refusal to "the dispatcher". Modify the announcement requirement to drop its dispatcher scenario and the marker. Modify the pull-request requirement's scenario about the pipeline running as an application.
-- `task-pipeline`: modify the `Pending` and stage-trigger requirements, which say no dispatcher dispatches from `Pending` and that telling "not picked up" from "being worked" is the dispatcher's job. Modify the refinement requirement, which names "the dispatcher" as a reader of the labels.
+- `task-pipeline`: modify the `Pending` and stage-trigger requirements, which say no dispatcher dispatches from `Pending` and that telling "not picked up" from "being worked" is the dispatcher's job. Modify the routing-back requirement, which says no dispatcher compares objections by counting transitions. Modify the refinement requirement, which names "the dispatcher" as a reader of the labels.
 - `openspec-integration`: remove the dispatcher's obligation to make OpenSpec reachable inside the bare clones it launched sessions into.
+- `agent-substrate`: modify the top-level-root requirement, which describes `cli/` as holding the dispatcher, the stage table, the Linear client and the executor, and names "one identity per stage" among the CLI's assumptions.
 - `repo-scaffold`, `project-install`: modify the sentences that say a project's own permission entries are "in force in a dispatched run" and that `.claude/settings.json` is "what a dispatched run establishes trust for".
 
 ## Impact

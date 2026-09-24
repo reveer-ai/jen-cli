@@ -1,5 +1,35 @@
 ## MODIFIED Requirements
 
+### Requirement: A stage may route a task backward
+
+A stage that finds the previous stage's output unusable SHALL move the task back to the status that owns the fix rather than doing that work itself. Review and testing SHALL route to `In Progress`; implementation SHALL route to `In Design` when there is no usable design to implement.
+
+A stage SHALL NOT route a task backward for a reason the record shows it was already routed back for. Where the task's record shows the same objection has already sent it back once, the stage SHALL move it to `Pending` instead and SHALL say in its comment what sent it back each time. Judging whether two objections are the same one SHALL belong to the stage, which is reading the record anyway and is the only actor in the pipeline capable of the comparison; counting transitions SHALL NOT stand in for it.
+
+#### Scenario: Review finds the implementation wanting
+
+- **WHEN** `review-task` requests changes
+- **THEN** the task moves back to `In Progress`
+- **AND** the comments backing the verdict are what implementation acts on
+
+#### Scenario: Implementation finds no usable design
+
+- **WHEN** `implement-task` finds the design absent or self-contradictory
+- **THEN** the task moves back to `In Design`
+- **AND** the blocker is recorded against the artifact it belongs to
+
+#### Scenario: The same objection recurs
+
+- **WHEN** a stage is about to route a task back for something the record shows already sent it back once
+- **THEN** it moves the task to `Pending` instead
+- **AND** its comment names the objection and each round it sent the task back
+
+#### Scenario: A different objection is found
+
+- **WHEN** a stage routes a task back for something the record does not show it was routed back for before
+- **THEN** it routes it backward normally
+- **AND** the task is not parked on account of having been routed back previously
+
 ### Requirement: Refinement precedes the pipeline and ends in `Todo`
 
 `refine-epic` SHALL turn an idea into an epic and its sub-issue tasks, and SHALL leave everything it produces in `Todo`. `Backlog` SHALL hold unrefined placeholders and `Todo` SHALL hold refined tasks ready to design.
