@@ -30,10 +30,6 @@ function capture(): Capture {
 function jen(argv: string[], projectRoot: string): Capture & { code: number } {
   const captured = capture();
   const code = run([...argv, projectRoot], captured.io, { templates: staged });
-  // `run` answers a promise for `jen run` and a number for these two. Narrowed here rather
-  // than cast, so an `init` that quietly became asynchronous fails loudly instead of every
-  // assertion below comparing a pending promise against an exit code.
-  if (typeof code !== 'number') throw new Error('init and update are synchronous');
   return { ...captured, code };
 }
 
@@ -55,8 +51,8 @@ describe('jen init on an empty project', () => {
   });
 
   // Every managed file, with no exception for one carrying values resolved at write time:
-  // jen writes what it staged, and a project's own values reach the runner from the
-  // registry at startup rather than from a file jen rendered.
+  // jen writes what it staged, and a project's own values live in its registry rather than
+  // in a file jen rendered.
   it('writes every managed file, byte-identical to what the package staged', () => {
     for (const { file } of payloadFiles()) {
       expect(readFileSync(join(root, file.target), 'utf8'), file.target).toBe(shipped(file.staged));
