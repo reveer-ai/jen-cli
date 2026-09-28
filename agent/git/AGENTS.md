@@ -51,14 +51,21 @@ Every call is insulated from both:
   repository is also created with `--template=`, so it starts with no sample hooks.
 - **`gc.auto=0` and `maintenance.auto=false`.** A fetch would otherwise start a detached
   gc that prunes a repository some other call is still using.
-- **In-tree `.gitattributes` are harmless, and not for the reason you'd guess.** A bare
-  repository reads **no** in-tree attributes unless `attr.tree` is set in config, and a
-  merge driver or textconv runs only if config defines it. The config is ours alone, so an
-  agent's `.gitattributes` names things that cannot run. Diff also passes `--no-ext-diff
-  --no-textconv`. The insulation test's hostile config sets `attr.tree` **on purpose**:
-  without it the driver could never fire, and a test that nothing ran would pass
-  vacuously. Its control drives the same config through plain git and asserts every
-  marker appears.
+- **Attributes are read from the empty tree, pinned per call, and never from the
+  repository's contents.** "A driver runs only if config defines it" is not a defence:
+  built-in values need no config. `merge=union` concatenates both sides of a conflict and
+  reports it clean, and `-diff` turns a file's changes into `Binary files differ`. An
+  agent's `.gitattributes` merged once would resolve every later conflict at the gate and
+  blank out the review record. That a bare repository reads no in-tree attributes is only
+  git's default. 2.46.0 read `HEAD`'s, and `attr.tree` in a repository's own config turns
+  it on. So from 2.40, the first git with `--attr-source`, every call against a repository
+  passes `--attr-source=<empty tree>`, which outranks both. The empty tree's id depends on
+  the repository's hash, so `hash-object` names it. Below 2.40 there is nothing to pin,
+  because a bare repository has no way to read in-tree attributes at all. The system
+  attributes file (`GIT_ATTR_NOSYSTEM=1`) and the home one (`core.attributesFile=/dev/null`)
+  are off as well. Diff also passes `--no-ext-diff --no-textconv`. The attribute tests set
+  `attr.tree` in the repository's config **on purpose**, and each has a control showing
+  plain git merging clean and hiding the diff.
 
 ## Names never reach an option position
 

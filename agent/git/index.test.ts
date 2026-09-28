@@ -702,6 +702,64 @@ describe('insulation from the host and from the repository', () => {
   });
 });
 
+describe('attributes in the repository', () => {
+  // Built-in attribute values need no config: `merge=union` resolves a conflict by keeping both
+  // sides, and `-diff` hides a file's changes. The repository's own config turning attribute
+  // reading on stands in for any git or setup that reads them — 2.46.0 read `HEAD`'s by default.
+  beforeEach(async () => {
+    await backend.create('demo');
+    const work = await workspace();
+    const base = await commit(work, { '.gitattributes': '* merge=union -diff\n', f: 'base\n' });
+    await push('demo', work, 'main');
+    await git(work, 'checkout', '--quiet', '-b', 'side');
+    await commit(work, { f: 'side\n' });
+    await push('demo', work, 'side');
+    await git(work, 'checkout', '--quiet', 'main');
+    await git(work, 'reset', '--quiet', '--hard', base);
+    await commit(work, { f: 'main\n' });
+    await push('demo', work, 'main');
+    await git(repoPath('demo'), 'config', 'attr.tree', 'refs/heads/main');
+  });
+
+  it('control: plain git reads them, merging the conflict clean and hiding the diff', async () => {
+    const repo = repoPath('demo');
+    const merged = await run('git', ['--git-dir', repo, 'merge-tree', '--write-tree', 'main', 'side'], { env: fixtureEnv() });
+    const tree = merged.stdout.trim();
+    expect(await git(repo, 'cat-file', 'blob', `${tree}:f`)).toBe('main\nside');
+    expect(await git(repo, 'diff', 'main', 'side')).toContain('Binary files');
+  });
+
+  it('never lets them resolve a conflict', async () => {
+    const result = await backend.merge('demo', 'side', 'main', { author: jen, committer: jen, message: 'm' });
+    expect(result).toMatchObject({ kind: 'conflict', paths: ['f'] });
+  });
+
+  it('never lets them hide a change from the diff', async () => {
+    const diff = await backend.diff('demo', 'main', 'side');
+    expect(diff).toContain('-main\n+side\n');
+    expect(diff).not.toContain('Binary files');
+  });
+
+  it('pins the source on every repository call from 2.40, and only there', async () => {
+    const log = join(scratch, `argv-${++counter}.log`);
+    const logging = await script('logging-git', `echo "$*" >> ${log}\nexec ${real} "$@"`);
+    const watched = await GitBackend.open(root, { git: logging });
+    await watched.merge('demo', 'side', 'main', { author: jen, committer: jen, message: 'm' });
+    const calls = (await readFile(log, 'utf8')).trim().split('\n').filter((line) => line.includes('--git-dir='));
+    expect(calls.length).toBeGreaterThan(0);
+    for (const call of calls) {
+      if (!call.includes(' hash-object ')) expect(call).toMatch(/--attr-source=[0-9a-f]{40}/);
+    }
+
+    // 2.39 takes no `--attr-source`, and has no way to read a bare repository's in-tree attributes.
+    await rm(log);
+    const older = await script('older-git', `echo "$*" >> ${log}\nfor a; do [ "$a" = version ] && { echo "git version 2.39.5"; exit 0; }; done\nexec ${real} "$@"`);
+    const old = await GitBackend.open(root, { git: older });
+    await old.listBranches('demo');
+    expect(await readFile(log, 'utf8')).not.toContain('--attr-source');
+  });
+});
+
 describe('hooks inside a repository', () => {
   it('never runs one, even where git would look for it by default', async () => {
     // Global config is already out of the picture, so this is the one thing `core.hooksPath`

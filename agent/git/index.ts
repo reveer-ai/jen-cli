@@ -24,6 +24,13 @@ import { isAbsolute, join, resolve } from 'node:path';
 /** The oldest git with `merge-tree --write-tree`, which is what merges without a working tree. */
 const MINIMUM = [2, 38] as const;
 
+/**
+ * The oldest git that can read a bare repository's attributes from a tree, and so the oldest
+ * that takes `--attr-source`. Below it there is no way for in-tree attributes to be read here
+ * at all; from it on, every call pins the source to the empty tree. See {@link GitBackend.#run}.
+ */
+const ATTR_SOURCE = [2, 40] as const;
+
 /** A project id: one path segment that can be neither hidden, relative, nor an option. */
 const PROJECT = /^[a-z0-9][a-z0-9-]{0,62}$/;
 
@@ -139,6 +146,8 @@ interface RunOptions {
   env?: Record<string, string>;
   /** The exit codes that are outcomes rather than failures. `[0]` unless said otherwise. */
   ok?: readonly number[];
+  /** The tree git reads attributes from, as `--attr-source`. Set by {@link GitBackend.#run} alone. */
+  attrSource?: string;
 }
 
 interface Ran {
@@ -151,6 +160,8 @@ export class GitBackend {
   readonly #root: string;
   readonly #git: string;
   readonly #limit: number;
+  /** Whether this git takes `--attr-source`, which {@link GitBackend.open} settles. */
+  #pinsAttributes = false;
 
   private constructor(root: string, git: string, limit: number) {
     this.#root = root;
@@ -176,11 +187,12 @@ export class GitBackend {
       throw new GitBackendError(`could not read a version from \`${backend.#git} version\`: ${JSON.stringify(text)}.`);
     }
     const [major, minor] = [Number(match[1]), Number(match[2])];
-    if (major < MINIMUM[0] || (major === MINIMUM[0] && minor < MINIMUM[1])) {
+    if (!atLeast([major, minor], MINIMUM)) {
       throw new GitBackendError(
         `git ${MINIMUM.join('.')} or later is required, for \`merge-tree --write-tree\`; found ${major}.${minor}.`,
       );
     }
+    backend.#pinsAttributes = atLeast([major, minor], ATTR_SOURCE);
     return backend;
   }
 
@@ -579,7 +591,32 @@ export class GitBackend {
   }
 
   /**
-   * Run git, insulated from the host, and collect everything it writes.
+   * Run git against a repository with its attributes pinned, or without one.
+   *
+   * **Attributes are read from the empty tree and nowhere else in the repository.** Some
+   * attribute values need no config at all: `merge=union` concatenates both sides of a
+   * conflict and reports it clean, and `-diff` hides a file's changes behind `Binary files
+   * differ`. So an agent's `.gitattributes`, once merged anywhere git reads attributes from,
+   * would resolve conflicts at the gate and blank out the review record. A bare repository
+   * reading none is git's default, and a default is not something to rest this on: 2.46.0
+   * read `HEAD`'s, and `attr.tree` in a repository's config turns it back on. The explicit
+   * source outranks both. Below 2.40 there is no attribute source to pin, because a bare
+   * repository then has no way to read in-tree attributes at all.
+   *
+   * The empty tree's id depends on the repository's hash, so git names it, per call.
+   */
+  async #run(args: string[], options: RunOptions = {}): Promise<Ran> {
+    if (options.repo === undefined || !this.#pinsAttributes) return this.#spawn(args, options);
+    const { stdout } = await this.#spawn(['hash-object', '-t', 'tree', '--stdin'], { repo: options.repo, input: '' });
+    const empty = stdout.toString('utf8').trim();
+    if (!OBJECT_ID.test(empty)) {
+      throw new GitBackendError(`\`git hash-object\` named the empty tree as ${JSON.stringify(empty)}, which is not an object id.`);
+    }
+    return this.#spawn(args, { ...options, attrSource: empty });
+  }
+
+  /**
+   * Spawn git, insulated from the host, and collect everything it writes.
    *
    * The environment is built here and not inherited. Inheriting would carry `GIT_DIR`,
    * `GIT_INDEX_FILE`, `GIT_EXTERNAL_DIFF` and whatever else the supervisor was started with
@@ -590,14 +627,18 @@ export class GitBackend {
    * Every pipe has an `error` listener. An unlistened stream `error` is raised as an uncaught
    * exception, and the process it would take down is the supervisor.
    */
-  #run(args: string[], options: RunOptions = {}): Promise<Ran> {
+  #spawn(args: string[], options: RunOptions): Promise<Ran> {
     const argv = [
       '-c', 'core.hooksPath=/dev/null',
+      // The home-directory attributes file. `HOME` is the root, so this is jen's, but nothing
+      // reads attributes from anywhere but a tree this module chose.
+      '-c', 'core.attributesFile=/dev/null',
       // A fetch would otherwise start a background gc or maintenance run: a process nobody
       // waits for, pruning under a repository an operation is still using.
       '-c', 'gc.auto=0',
       '-c', 'maintenance.auto=false',
       ...(options.repo === undefined ? [] : [`--git-dir=${options.repo}`]),
+      ...(options.attrSource === undefined ? [] : [`--attr-source=${options.attrSource}`]),
       ...args,
     ];
     const env: Record<string, string> = {
@@ -605,6 +646,7 @@ export class GitBackend {
       HOME: this.#root,
       GIT_CONFIG_NOSYSTEM: '1',
       GIT_CONFIG_GLOBAL: '/dev/null',
+      GIT_ATTR_NOSYSTEM: '1',
       GIT_TERMINAL_PROMPT: '0',
       LC_ALL: 'C',
       ...options.env,
@@ -761,6 +803,10 @@ function tail(stderr: string): string {
 
 function message(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function atLeast(version: readonly [number, number], floor: readonly [number, number]): boolean {
+  return version[0] > floor[0] || (version[0] === floor[0] && version[1] >= floor[1]);
 }
 
 async function exists(path: string): Promise<boolean> {
