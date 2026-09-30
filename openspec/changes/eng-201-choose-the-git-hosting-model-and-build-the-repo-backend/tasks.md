@@ -3,7 +3,7 @@
 - [x] 1.1 Create `agent/git/index.ts` with `GitBackendError` and a `StaleRefError` subclass carrying the branch's actual sha. Add the exported result types (`MergeResult` = `merged` | `conflict` | `up-to-date`, tree entry, bundle tip) and the attribution type (name, email, date).
 - [x] 1.2 Implement the internal `run(args, options)` helper. It spawns `git` with no shell, uses a from-scratch environment (`PATH`, `HOME`=root, `GIT_CONFIG_NOSYSTEM=1`, `GIT_CONFIG_GLOBAL=/dev/null`, `GIT_TERMINAL_PROMPT=0`, `LC_ALL=C`), and always passes `-c core.hooksPath=/dev/null`. It puts `error` listeners on the child and on every pipe, drains stdout (Buffer) and stderr fully, and resolves `{ code, stdout, stderr }`. The caller decides which codes are outcomes.
 - [x] 1.3 Implement validation: project id against `^[a-z0-9][a-z0-9-]{0,62}$`; branch name via `git check-ref-format --branch`, plus no leading `-`; a revision is a valid branch or a full-length hex id. Invalid input throws before any git or filesystem call.
-- [x] 1.4 Implement the async factory `GitBackend.open(root, { git? })`. It runs `git version`, parses the version, refuses anything below 2.38 with an error naming the requirement, and rejects (without crashing) when `git` can't be spawned.
+- [x] 1.4 Implement the async factory `GitBackend.open(root, { git? })`. It runs `git version`, parses the version, refuses anything below 2.38 with an error naming the requirement, and rejects (without crashing) when `git` can't be spawned. *(The floor moves to 2.46 in 7.1.)*
 
 ## 2. Repositories and branches
 
@@ -37,3 +37,13 @@
 
 - [x] 6.1 Write `agent/git/AGENTS.md`: the hosting decision and the forge comparison; the insulation rules; `fetch` over `unbundle` and why (fsck is ignored by `unbundle`, as probed); `--end-of-options` must follow every real option; always a merge commit; no deletion.
 - [x] 6.2 Run `npm install --prefix agent`, `npx tsc -p agent/tsconfig.json`, and `npx vitest run --config agent/vitest.config.ts agent/git`, then the full substrate suite, including `boundary.test.ts`. Report which suites couldn't run for lack of a container runtime rather than implying they passed. *(No runtime was up: `sandbox/docker.test.ts`, `supervisor/containers.test.ts` and `acceptance.test.ts` were not run. This change touches none of what they cover.)*
+
+## 7. Raise the git floor to 2.46
+
+Before 2.46 a fetch from a bundle ignores `transfer.fsckObjects`, so `importBundle` stored malformed objects on every git from 2.38 to 2.45 (design §5, §6).
+
+- [ ] 7.1 Raise `MINIMUM` in `agent/git/index.ts` to 2.46, so `open` refuses older gits with an error naming 2.46. Update the version-refusal test's stub to report `git version 2.45.3`.
+- [ ] 7.2 Make the `--attr-source=<empty tree>` pin unconditional: drop the `ATTR_SOURCE` (2.40) gate and the unpinned branch, and drop the 2.39 half of the flag-presence test. The attribute tests from design §3 stay, including their plain-git controls.
+- [ ] 7.3 Memoize the empty tree's id per repository path, so a repository call no longer spawns an extra `hash-object` each time.
+- [ ] 7.4 Update `agent/git/AGENTS.md`: the floor is 2.46 and why (the fsck finding, as reproduced with plain git on 2.45.3 vs 2.46.0), and the attribute bullet no longer describes a below-2.40 case.
+- [ ] 7.5 Re-run `npx tsc -p agent/tsconfig.json` and `npx vitest run --config agent/vitest.config.ts agent/git agent/boundary.test.ts` on the host git, and run the malformed-bundle test under a real 2.46.0 (a container, as test-task did). Report what couldn't run.

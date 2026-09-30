@@ -62,11 +62,11 @@ Repositories SHALL NOT share an object store: no alternates, and no common objec
 
 ### Requirement: Git is insulated from host configuration and from repository contents
 
-Every `git` invocation SHALL run with an environment the backend builds rather than inherits. It SHALL ignore system and global git configuration, SHALL run no hooks, and SHALL NOT prompt. Diff SHALL disable external diff drivers, textconv, and color, and SHALL use fixed `a/` and `b/` prefixes.
+Every `git` invocation SHALL run with an environment the backend builds rather than inherits. It SHALL ignore system and global git configuration, SHALL run no hooks, and SHALL NOT prompt. It SHALL read no git attributes from the repository's contents or from the host's attribute files, whatever the repository's own configuration says. Diff SHALL disable external diff drivers, textconv, and color, and SHALL use fixed `a/` and `b/` prefixes.
 
 Branch names SHALL be validated with git's own ref-format rules and SHALL NOT begin with `-`. A revision SHALL be either a valid branch name or a full-length hexadecimal object id. Every caller-supplied operand SHALL follow `--end-of-options`.
 
-The backend SHALL require git 2.38 or later, and SHALL refuse construction against an older git with an error naming the requirement.
+The backend SHALL require git 2.46 or later, and SHALL refuse construction against an older git with an error naming the requirement.
 
 #### Scenario: A hostile global config changes nothing
 
@@ -79,6 +79,12 @@ The backend SHALL require git 2.38 or later, and SHALL refuse construction again
 - **WHEN** a branch's `.gitattributes` names a merge driver or textconv, and that branch is merged or diffed
 - **THEN** no external program is run
 
+#### Scenario: A repository's own attributes change no outcome
+
+- **WHEN** the repository's own config sets `attr.tree = refs/heads/main`, `main`'s `.gitattributes` is `* merge=union -diff`, and a branch that conflicts with `main` is merged, and a changed file is diffed
+- **THEN** the merge result is `conflict`
+- **AND** the diff shows the changed lines rather than `Binary files … differ`
+
 #### Scenario: An option-shaped name is refused
 
 - **WHEN** a branch name `--output=/tmp/x` or a revision `-p` is passed to any operation
@@ -86,8 +92,8 @@ The backend SHALL require git 2.38 or later, and SHALL refuse construction again
 
 #### Scenario: An old git is refused up front
 
-- **WHEN** the backend is constructed and `git version` reports a version below 2.38
-- **THEN** construction fails with an error naming 2.38 as the requirement
+- **WHEN** the backend is constructed and `git version` reports a version below 2.46
+- **THEN** construction fails with an error naming 2.46 as the requirement
 
 ### Requirement: Branches are listed and written by compare-and-swap
 

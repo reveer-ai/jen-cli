@@ -28,6 +28,6 @@ None. `agent-substrate`'s boundary requirements (the `agent/` root, no `cli/` â†
 ## Impact
 
 - **New code:** `agent/git/` holds the backend, its tests, and `AGENTS.md` with the decision record. No changes to existing `agent/` modules. Nothing calls the backend until ENG-202 wires it into the supervisor.
-- **Dependencies:** no npm dependency. It needs a host `git` of at least 2.38, for `merge-tree --write-tree`, which is what makes a merge possible without a working tree. The backend checks the version when it is constructed and refuses an older one.
+- **Dependencies:** no npm dependency. It needs a host `git` of at least 2.46. That is the first release in which a fetch from a bundle honours `transfer.fsckObjects`, and it is what makes incoming objects fsck-checked. Everything else the backend relies on is older: `merge-tree --write-tree` (2.38) and `--attr-source` (2.40). The backend checks the version when it is constructed and refuses an older one. That excludes the git 2.39 that Apple and Debian bookworm ship.
 - **Not covered here:** how a bundle crosses into and out of a sandbox. The sandbox's input channel is text, and the `git_fetch`/`git_push` wiring belongs to ENG-202. So do the store root that repositories live under and the project â†” repository binding. Onboarding an existing repository is ENG-209's. Repository maintenance (gc, backup scheduling) is not needed at this scale.
 - **Checks:** `agent/` is outside CI. The typecheck and tests are run by hand (`agent/AGENTS.md`).
