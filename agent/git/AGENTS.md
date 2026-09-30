@@ -137,3 +137,16 @@ Every call's output is capped (64 MiB by default, `outputLimit` in tests). Going
 cap is an error, never a truncation. A truncated diff would be a false review record, and
 a truncated blob would be a file nobody committed. `diff` decodes as UTF-8, so a non-UTF-8
 text file's lines lose bytes in the diff. `blob` is the exact-bytes path.
+
+## Testing against a specific git
+
+The host's git is whatever it is, so the floor and the version-sensitive tests (the
+malformed bundle, the attribute tests) are only proven by running them under a real git of
+the version in question. Build that git from source on `node:22-bookworm-slim` and run
+`git/index.test.ts` + `boundary.test.ts` there. Two traps:
+
+- **Don't `npm ci` from `agent/package-lock.json`.** It is stale, and npm 10 crashes on it
+  (`edgesOut`). Install `vitest` and `openai` at the lockfile's versions into a fresh
+  directory with `--legacy-peer-deps` instead.
+- **Mount `cli/` beside `agent/`.** `boundary.test.ts` reads it to check that neither
+  imports the other, and fails on missing files without it.
