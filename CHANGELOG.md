@@ -1,5 +1,23 @@
 # @reveer/jen
 
+## 0.6.0
+
+### Minor Changes
+
+- [#44](https://github.com/reveer-ai/jen-cli/pull/44) [`dfd8ce8`](https://github.com/reveer-ai/jen-cli/commit/dfd8ce8789c795e677bf52ae4216a1a976368fe9) Thanks [@joshtgi](https://github.com/joshtgi)! - `jen run` and `jen watch` are removed, along with every option only they took (`--dry-run`, `--team`, `--project`, `--concurrency`, `--issue-page`, `--comment-page`, `--transcripts`, `--interval`). Invoking either now reports `Unknown command`. The GitHub App role identities they ran stages under, the `JEN_GH_*` and `LINEAR_API_KEY` environment they read, and the `On Pause` project halt go with them. None of it was ever used. `jen init`, `jen update`, `--help` and `--version` are unchanged.
+
+  The `setup-jen` skill is no longer shipped, and `jen update` removes the stamped copy from a project that has one. Fill in `registry.yaml` by hand instead. The stub no longer describes identity entries, and an existing project's own `registry.yaml` is left alone, as it always is.
+
+  `yaml` is no longer a runtime dependency.
+
+### Patch Changes
+
+- [#30](https://github.com/reveer-ai/jen-cli/pull/30) [`755c494`](https://github.com/reveer-ai/jen-cli/commit/755c49480150543fbc9ba313e158c4af9e393b1c) Thanks [@joshtgi](https://github.com/joshtgi)! - The repository is now `reveer-ai/jen-cli`. The package is still `@reveer/jen` and the binary is still `jen` — only the repository moved, so nothing about installing or running jen changes.
+
+  `repository.url` in the manifest tracks the new name. That field is what `npm publish --provenance` attests against the workflow's own repository, so it is not cosmetic metadata: left stale it is a mismatch at publish time rather than a wrong link on the registry page.
+
+  GitHub redirects the old repository URL, so existing clones, links and the git remote keep working — but a redirect is a courtesy, not a binding, and anything that matched the old name exactly does not follow it. The npm trusted-publisher entry is the one that matters: it names owner, repository, workflow and environment, and a repository that no longer matches fails the OIDC exchange as a 404 naming the package.
+
 ## 0.5.0
 
 ### Minor Changes
