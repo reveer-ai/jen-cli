@@ -42,8 +42,8 @@
 
 Before 2.46 a fetch from a bundle ignores `transfer.fsckObjects`, so `importBundle` stored malformed objects on every git from 2.38 to 2.45 (design §5, §6).
 
-- [ ] 7.1 Raise `MINIMUM` in `agent/git/index.ts` to 2.46, so `open` refuses older gits with an error naming 2.46. Update the version-refusal test's stub to report `git version 2.45.3`.
-- [ ] 7.2 Make the `--attr-source=<empty tree>` pin unconditional: drop the `ATTR_SOURCE` (2.40) gate and the unpinned branch, and drop the 2.39 half of the flag-presence test. The attribute tests from design §3 stay, including their plain-git controls.
-- [ ] 7.3 Memoize the empty tree's id per repository path, so a repository call no longer spawns an extra `hash-object` each time.
-- [ ] 7.4 Update `agent/git/AGENTS.md`: the floor is 2.46 and why (the fsck finding, as reproduced with plain git on 2.45.3 vs 2.46.0), and the attribute bullet no longer describes a below-2.40 case.
-- [ ] 7.5 Re-run `npx tsc -p agent/tsconfig.json` and `npx vitest run --config agent/vitest.config.ts agent/git agent/boundary.test.ts` on the host git, and run the malformed-bundle test under a real 2.46.0 (a container, as test-task did). Report what couldn't run.
+- [x] 7.1 Raise `MINIMUM` in `agent/git/index.ts` to 2.46, so `open` refuses older gits with an error naming 2.46. Update the version-refusal test's stub to report `git version 2.45.3`.
+- [x] 7.2 Make the `--attr-source=<empty tree>` pin unconditional: drop the `ATTR_SOURCE` (2.40) gate and the unpinned branch, and drop the 2.39 half of the flag-presence test. The attribute tests from design §3 stay, including their plain-git controls.
+- [x] 7.3 Memoize the empty tree's id per repository path, so a repository call no longer spawns an extra `hash-object` each time.
+- [x] 7.4 Update `agent/git/AGENTS.md`: the floor is 2.46 and why (the fsck finding, as reproduced with plain git on 2.45.3 vs 2.46.0), and the attribute bullet no longer describes a below-2.40 case.
+- [x] 7.5 Re-run `npx tsc -p agent/tsconfig.json` and `npx vitest run --config agent/vitest.config.ts agent/git agent/boundary.test.ts` on the host git, and run the malformed-bundle test under a real 2.46.0 (a container, as test-task did). Report what couldn't run.

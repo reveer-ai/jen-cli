@@ -21,15 +21,12 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import { lstat, mkdir, mkdtemp, rename, rm } from 'node:fs/promises';
 import { isAbsolute, join, resolve } from 'node:path';
 
-/** The oldest git with `merge-tree --write-tree`, which is what merges without a working tree. */
-const MINIMUM = [2, 38] as const;
-
 /**
- * The oldest git that can read a bare repository's attributes from a tree, and so the oldest
- * that takes `--attr-source`. Below it there is no way for in-tree attributes to be read here
- * at all; from it on, every call pins the source to the empty tree. See {@link GitBackend.#run}.
+ * The oldest git whose fetch from a bundle honours `transfer.fsckObjects`. Before it,
+ * {@link GitBackend.importBundle} would store a malformed object unchecked. It also covers
+ * `merge-tree --write-tree` (2.38) and `--attr-source` (2.40), so neither needs a gate.
  */
-const ATTR_SOURCE = [2, 40] as const;
+const MINIMUM = [2, 46] as const;
 
 /** A project id: one path segment that can be neither hidden, relative, nor an option. */
 const PROJECT = /^[a-z0-9][a-z0-9-]{0,62}$/;
@@ -160,8 +157,8 @@ export class GitBackend {
   readonly #root: string;
   readonly #git: string;
   readonly #limit: number;
-  /** Whether this git takes `--attr-source`, which {@link GitBackend.open} settles. */
-  #pinsAttributes = false;
+  /** The empty tree's id per repository path. A repository's hash is fixed when it is made. */
+  readonly #emptyTrees = new Map<string, string>();
 
   private constructor(root: string, git: string, limit: number) {
     this.#root = root;
@@ -189,10 +186,9 @@ export class GitBackend {
     const [major, minor] = [Number(match[1]), Number(match[2])];
     if (!atLeast([major, minor], MINIMUM)) {
       throw new GitBackendError(
-        `git ${MINIMUM.join('.')} or later is required, for \`merge-tree --write-tree\`; found ${major}.${minor}.`,
+        `git ${MINIMUM.join('.')} or later is required, for \`transfer.fsckObjects\` on a bundle fetch; found ${major}.${minor}.`,
       );
     }
-    backend.#pinsAttributes = atLeast([major, minor], ATTR_SOURCE);
     return backend;
   }
 
@@ -241,6 +237,8 @@ export class GitBackend {
     const target = join(archive, `${project}-${stamp}.git`);
     try {
       await rename(source, target);
+      // The path can be created again, and the next repository there owes git nothing.
+      this.#emptyTrees.delete(source);
     } catch (error) {
       throw new GitBackendError(`could not archive \`${project}\`: ${message(error)}`, { cause: error });
     }
@@ -315,7 +313,8 @@ export class GitBackend {
    * Bring a bundle's objects into the repository and report the tips it carries. No ref moves.
    *
    * **Through `fetch`, never `bundle unbundle`**: `unbundle` ignores `transfer.fsckObjects` and
-   * will store a malformed commit that `fetch` refuses. Fetching with no destination and no
+   * will store a malformed commit that `fetch` refuses — from 2.46, the first git whose fetch
+   * from a bundle honours it, and the floor {@link GitBackend.open} holds for that. Fetching with no destination and no
    * `FETCH_HEAD` writes no ref at all, and a bundle whose prerequisites are missing fails whole.
    *
    * The tips are fetched **by object id rather than by the names the bundle gives them**. Those
@@ -600,19 +599,25 @@ export class GitBackend {
    * would resolve conflicts at the gate and blank out the review record. A bare repository
    * reading none is git's default, and a default is not something to rest this on: 2.46.0
    * read `HEAD`'s, and `attr.tree` in a repository's config turns it back on. The explicit
-   * source outranks both. Below 2.40 there is no attribute source to pin, because a bare
-   * repository then has no way to read in-tree attributes at all.
+   * source outranks both.
    *
-   * The empty tree's id depends on the repository's hash, so git names it, per call.
+   * The empty tree's id depends on the repository's hash, so git names it, once per repository.
    */
   async #run(args: string[], options: RunOptions = {}): Promise<Ran> {
-    if (options.repo === undefined || !this.#pinsAttributes) return this.#spawn(args, options);
-    const { stdout } = await this.#spawn(['hash-object', '-t', 'tree', '--stdin'], { repo: options.repo, input: '' });
+    if (options.repo === undefined) return this.#spawn(args, options);
+    return this.#spawn(args, { ...options, attrSource: await this.#emptyTree(options.repo) });
+  }
+
+  async #emptyTree(repo: string): Promise<string> {
+    const known = this.#emptyTrees.get(repo);
+    if (known !== undefined) return known;
+    const { stdout } = await this.#spawn(['hash-object', '-t', 'tree', '--stdin'], { repo, input: '' });
     const empty = stdout.toString('utf8').trim();
     if (!OBJECT_ID.test(empty)) {
       throw new GitBackendError(`\`git hash-object\` named the empty tree as ${JSON.stringify(empty)}, which is not an object id.`);
     }
-    return this.#spawn(args, { ...options, attrSource: empty });
+    this.#emptyTrees.set(repo, empty);
+    return empty;
   }
 
   /**

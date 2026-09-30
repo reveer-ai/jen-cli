@@ -58,10 +58,10 @@ Every call is insulated from both:
   agent's `.gitattributes` merged once would resolve every later conflict at the gate and
   blank out the review record. That a bare repository reads no in-tree attributes is only
   git's default. 2.46.0 read `HEAD`'s, and `attr.tree` in a repository's own config turns
-  it on. So from 2.40, the first git with `--attr-source`, every call against a repository
-  passes `--attr-source=<empty tree>`, which outranks both. The empty tree's id depends on
-  the repository's hash, so `hash-object` names it. Below 2.40 there is nothing to pin,
-  because a bare repository has no way to read in-tree attributes at all. The system
+  it on. So every call against a repository passes `--attr-source=<empty tree>`, which
+  outranks both. The empty tree's id depends on the repository's hash, so `hash-object`
+  names it, once per repository path; `archive` forgets it, since the path can be created
+  again. The system
   attributes file (`GIT_ATTR_NOSYSTEM=1`) and the home one (`core.attributesFile=/dev/null`)
   are off as well. Diff also passes `--no-ext-diff --no-textconv`. The attribute tests set
   `attr.tree` in the repository's config **on purpose**, and each has a control showing
@@ -96,6 +96,13 @@ transfer.fsckObjects=true fetch --no-tags --no-write-fetch-head <bundle> <sha>â€
 - **`unbundle` ignores `transfer.fsckObjects`.** It stored a commit with a malformed author
   line that `fetch` refuses (`missingEmail â€¦ index-pack died`). This was probed on 2.54, and
   the malformed-bundle test fails if `unbundle` is swapped back in.
+- **`fetch` honours it only from git 2.46, and that is the floor.** Before 2.46 a fetch
+  from a bundle ignores `transfer.fsckObjects` too. Reproduced with plain git: on 2.45.3
+  the fetch exits 0 and `cat-file -t` finds the malformed commit stored; on 2.46.0 it is
+  refused with `missingEmail`. The malformed-bundle test fails on every git from 2.38.5 to
+  2.45.3. `open` refuses anything older than 2.46, and that one floor also covers
+  `merge-tree --write-tree` (2.38) and `--attr-source` (2.40), so nothing here is
+  version-gated. The cost is Apple's and Debian bookworm's git 2.39.
 - **Tips are fetched by sha, not by the names the bundle gives them.** A bundle's header is
   text an agent's workspace wrote, and a refspec is a syntax: a "ref" named
   `+refs/heads/main:refs/heads/owned` would be an instruction. The names are returned as
@@ -121,8 +128,8 @@ read as "no changes", so an absent revision is an error there.
 given author and committer, and `update-ref` moves the target, compare-and-swap against the
 tip it merged. **A fast-forward is never performed.** A merge commit is the one commit jen
 makes, and it records who passed the gate. A conflict is returned as a result with the
-paths and git's messages, and nothing is resolved. This needs git 2.38 or later, and
-`open` checks for it.
+paths and git's messages, and nothing is resolved. `merge-tree --write-tree` needs
+git 2.38, which the 2.46 floor already covers.
 
 ## Output is whole or an error
 

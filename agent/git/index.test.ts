@@ -134,14 +134,14 @@ describe('construction', () => {
     expect(await readdir(root)).toEqual([]);
   });
 
-  it('refuses a git older than 2.38, naming the requirement', async () => {
-    const old = await script('old-git', 'echo "git version 2.37.0"');
-    await expect(GitBackend.open(root, { git: old })).rejects.toThrow(/2\.38/);
+  it('refuses a git older than 2.46, naming the requirement', async () => {
+    const old = await script('old-git', 'echo "git version 2.45.3"');
+    await expect(GitBackend.open(root, { git: old })).rejects.toThrow(/2\.46/);
     await expect(GitBackend.open(root, { git: old })).rejects.toBeInstanceOf(GitBackendError);
   });
 
   it('accepts a vendor-suffixed version string', async () => {
-    const apple = await script('apple-git', `case "$1" in version) echo "git version 2.39.5 (Apple Git-154)";; *) exec ${real} "$@";; esac`);
+    const apple = await script('apple-git', `case "$1" in version) echo "git version 2.50.1 (Apple Git-155)";; *) exec ${real} "$@";; esac`);
     await expect(GitBackend.open(root, { git: apple })).resolves.toBeInstanceOf(GitBackend);
   });
 
@@ -740,7 +740,7 @@ describe('attributes in the repository', () => {
     expect(diff).not.toContain('Binary files');
   });
 
-  it('pins the source on every repository call from 2.40, and only there', async () => {
+  it('pins the source on every repository call, naming the empty tree once per repository', async () => {
     const log = join(scratch, `argv-${++counter}.log`);
     const logging = await script('logging-git', `echo "$*" >> ${log}\nexec ${real} "$@"`);
     const watched = await GitBackend.open(root, { git: logging });
@@ -750,13 +750,22 @@ describe('attributes in the repository', () => {
     for (const call of calls) {
       if (!call.includes(' hash-object ')) expect(call).toMatch(/--attr-source=[0-9a-f]{40}/);
     }
+    await watched.listBranches('demo');
+    const after = (await readFile(log, 'utf8')).trim().split('\n');
+    expect(after.filter((line) => line.includes(' hash-object '))).toHaveLength(1);
+  });
 
-    // 2.39 takes no `--attr-source`, and has no way to read a bare repository's in-tree attributes.
-    await rm(log);
-    const older = await script('older-git', `echo "$*" >> ${log}\nfor a; do [ "$a" = version ] && { echo "git version 2.39.5"; exit 0; }; done\nexec ${real} "$@"`);
-    const old = await GitBackend.open(root, { git: older });
-    await old.listBranches('demo');
-    expect(await readFile(log, 'utf8')).not.toContain('--attr-source');
+  it('names the empty tree afresh for a repository created where one was archived', async () => {
+    const log = join(scratch, `argv-${++counter}.log`);
+    const logging = await script('logging-git', `echo "$*" >> ${log}\nexec ${real} "$@"`);
+    const watched = await GitBackend.open(root, { git: logging });
+    await watched.create('again');
+    await watched.listBranches('again');
+    await watched.archive('again');
+    await watched.create('again');
+    await watched.listBranches('again');
+    const calls = (await readFile(log, 'utf8')).trim().split('\n');
+    expect(calls.filter((line) => line.includes(' hash-object '))).toHaveLength(2);
   });
 });
 
